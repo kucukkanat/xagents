@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.output/
+.eve/
+*.tsbuildinfo
+.env
+.env.local
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+.agents-workspace/
+coverage/
+playwright-report/
+test-results/
+.DS_Store

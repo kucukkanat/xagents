@@ -1,0 +1,19 @@
+{
+  "name": "@xagents/eve-runtime",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@xagents/core": "workspace:*",
+    "@xagents/db": "workspace:*",
+    "@xagents/kb": "workspace:*",
+    "@xagents/sandbox": "workspace:*",
+    "@xagents/skills": "workspace:*",
+    "@ai-sdk/deepseek": "^1.0.0",
+    "ai": "^7.0.26",
+    "eve": "^0.23.0",
+    "zod": "^4.4.3"
+  }
+}
