@@ -8,7 +8,8 @@
   },
   "scripts": {
     "dev": "concurrently -n server,web -c blue,magenta \"bun run dev:server\" \"bun run dev:web\"",
-    "dev:server": "cd apps/server && bun run dev",
+    "dev:server": "tsx watch apps/server/src/main.ts",
+    "start:server": "node --experimental-strip-types apps/server/src/main.ts",
     "dev:web": "cd apps/web && bun run dev",
     "build:web": "cd apps/web && bun run build",
     "typecheck": "for d in packages/* apps/*; do [ -f \"$d/tsconfig.json\" ] && (echo \"# $d\" && tsc --noEmit -p \"$d/tsconfig.json\") || true; done",
@@ -23,5 +24,12 @@
     "vitest": "^2.1.8",
     "tsx": "^4.19.2",
     "@types/node": "^24.0.0"
+  },
+  "dependencies": {
+    "@ai-sdk/deepseek": "^1.0.0",
+    "ai": "^7.0.26",
+    "eve": "^0.23.0",
+    "microsandbox": "^0.6.6",
+    "zod": "^4.4.3"
   }
 }
