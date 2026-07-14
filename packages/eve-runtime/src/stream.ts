@@ -72,21 +72,26 @@ export const mapEveEvent = (ev: EveRawEvent): ChatStreamEvent[] => {
       }));
     }
     case "action.result": {
-      const callId = str(ev.data.callId) || str(ev.data.actionId);
-      const toolName = str(ev.data.toolName) || str(ev.data.name);
-      const isError = ev.data.isError === true || ev.data.ok === false;
-      const result = ev.data.output ?? ev.data.result ?? ev.data;
+      // eve nests the result under `data.result`; fields may sit there or at the
+      // top level, so merge (nested wins) before reading callId/toolName/output.
+      const p: Record<string, unknown> = isRecord(ev.data.result)
+        ? { ...ev.data, ...ev.data.result }
+        : ev.data;
+      const callId = str(p.callId) || str(p.actionId);
+      const toolName = str(p.toolName) || str(p.name);
+      const isError = p.isError === true || p.ok === false;
+      const output = p.output ?? p.result ?? p;
       const events: ChatStreamEvent[] = [
         {
           type: "tool_result",
           callId,
           toolName,
           ok: !isError,
-          result,
+          result: output,
           sandbox: SANDBOX_TOOLS.has(toolName),
         },
       ];
-      const hits = extractKbHits(toolName, result);
+      const hits = extractKbHits(toolName, output);
       if (hits.length > 0) events.push({ type: "kb_citations", hits });
       return events;
     }

@@ -1,44 +1,52 @@
 import { type AppError, type Result, appError, err, ok } from "@xagents/core";
 import type { EveResume } from "./types";
 
-interface PostedTurn {
+export interface TurnStart {
   readonly sessionId: string;
   readonly continuationToken: string;
-  /** Event index this turn's stream starts at (for computing the next cursor). */
+  /** Event index this turn's stream starts at. */
   readonly startIndex: number;
-  readonly stream: ReadableStream<Uint8Array>;
 }
 
 /**
- * Starts (or resumes) a turn against a running eve host and returns the live
- * NDJSON event stream. Endpoints/shape verified against eve 0.23.0:
- *  - new:    POST /eve/v1/session               { message }  -> { sessionId, continuationToken }
- *  - resume: POST /eve/v1/session/:id           { continuationToken, message }
- *  - stream: GET  /eve/v1/session/:id/stream    -> application/x-ndjson
+ * Post a user message to a running eve host (new session or follow-up) and
+ * return the ids needed to open the event stream. Verified against eve 0.23.0:
+ *  - new:    POST /eve/v1/session      { message }            -> { sessionId, continuationToken }
+ *  - resume: POST /eve/v1/session/:id  { continuationToken, message }
  */
-export const postTurn = async (
+export const postMessage = async (
   origin: string,
   resume: EveResume | null,
   message: string,
-): Promise<Result<PostedTurn, AppError>> => {
+): Promise<Result<TurnStart, AppError>> => {
   try {
-    const posted = resume === null
-      ? await startSession(origin, message)
-      : await appendSession(origin, resume, message);
+    const posted =
+      resume === null
+        ? await startSession(origin, message)
+        : await appendSession(origin, resume, message);
     if (!posted.ok) return posted;
-
-    // Resume from the cursor so a replayed stream doesn't re-emit prior turns.
-    const startIndex = resume?.nextIndex ?? 0;
-    const streamRes = await fetch(
-      `${origin}/eve/v1/session/${posted.value.sessionId}/stream?startIndex=${startIndex}`,
-      { headers: { accept: "application/x-ndjson" } },
-    );
-    if (!streamRes.ok || streamRes.body === null) {
-      return err(appError("agent_runtime_error", `eve stream failed (${streamRes.status})`));
-    }
-    return ok({ ...posted.value, startIndex, stream: streamRes.body });
+    return ok({ ...posted.value, startIndex: resume?.nextIndex ?? 0 });
   } catch (cause) {
     return err(appError("agent_runtime_error", "eve host request failed", cause));
+  }
+};
+
+/** Open the NDJSON event stream from a given event index. */
+export const openStream = async (
+  origin: string,
+  sessionId: string,
+  startIndex: number,
+): Promise<Result<ReadableStream<Uint8Array>, AppError>> => {
+  try {
+    const res = await fetch(`${origin}/eve/v1/session/${sessionId}/stream?startIndex=${startIndex}`, {
+      headers: { accept: "application/x-ndjson" },
+    });
+    if (!res.ok || res.body === null) {
+      return err(appError("agent_runtime_error", `eve stream failed (${res.status})`));
+    }
+    return ok(res.body);
+  } catch (cause) {
+    return err(appError("agent_runtime_error", "eve stream request failed", cause));
   }
 };
 
@@ -74,7 +82,6 @@ const appendSession = async (
     return err(appError("agent_runtime_error", `eve follow-up failed (${res.status})`));
   }
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  // The token may rotate each turn; fall back to the prior one if unchanged.
   const continuationToken = pick(body.continuationToken) ?? resume.continuationToken;
   return ok({ sessionId: resume.sessionId, continuationToken });
 };
