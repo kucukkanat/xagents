@@ -8,6 +8,12 @@ import type { KbSearchHit } from "./entities";
  */
 export type ChatStreamEvent =
   | { readonly type: "turn_started"; readonly chatId: string }
+  /**
+   * Lifecycle signal so the UI can reflect what the background turn is doing
+   * before any model output exists — chiefly the cold-start window while the
+   * eve host boots. Synthesized by the server, never persisted, never from eve.
+   */
+  | { readonly type: "status"; readonly state: "preparing" | "thinking" }
   /** An incremental assistant text delta. */
   | { readonly type: "text_delta"; readonly text: string }
   /** Model reasoning/thinking delta (when the model exposes it). */

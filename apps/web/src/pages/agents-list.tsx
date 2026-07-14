@@ -3,6 +3,7 @@ import { BotIcon, MessageSquareIcon, PencilIcon, PlusIcon, Trash2Icon } from "lu
 import { Link, useNavigate } from "react-router-dom";
 import type { Agent } from "@xagents/core";
 import { EmptyState } from "@/components/empty-state";
+import { ImportAgentDialog } from "@/components/import-agent-dialog";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -49,11 +50,14 @@ export function AgentsListPage() {
         title="My agents"
         description="Build and manage your AI agents."
         action={
-          <Button asChild>
-            <Link to="/agents/new">
-              <PlusIcon /> New agent
-            </Link>
-          </Button>
+          <div className="flex gap-2">
+            <ImportAgentDialog onImported={reload} />
+            <Button asChild>
+              <Link to="/agents/new">
+                <PlusIcon /> New agent
+              </Link>
+            </Button>
+          </div>
         }
       />
 

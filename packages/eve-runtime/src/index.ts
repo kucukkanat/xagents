@@ -5,6 +5,15 @@ import { isTurnTerminal, mapEveEvent, parseNdjson } from "./stream";
 import type { AgentHost, EveResume } from "./types";
 
 export { materializeAgent } from "./materialize";
+export { zipDirectory, unzipBuffer } from "./zip";
+export { parseAgentArchive } from "./import";
+export type {
+  ImportPlan,
+  ImportPlanAgent,
+  ImportPlanKnowledgebase,
+  ImportPlanSkill,
+  ParsedArchive,
+} from "./import";
 export { HostSupervisor } from "./supervisor";
 export type { SupervisorOptions } from "./supervisor";
 export type { AgentHost, AgentMaterializationSpec, EveResume, MaterializedSkill } from "./types";

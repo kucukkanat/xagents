@@ -1,5 +1,6 @@
 import {
   appError,
+  asId,
   err,
   newId,
   ok,
@@ -9,6 +10,7 @@ import {
   type ChatId,
   type ChatRole,
   type ChatStreamEvent,
+  type ChatSummary,
   type Message,
   type Result,
   type UserId,
@@ -16,6 +18,22 @@ import {
 import { nowIso } from "../helpers";
 import { mapChatRow, mapMessageRow, type ChatRow, type MessageRow } from "../mappers";
 import type { Sqlite } from "../sqlite";
+
+/** A chat row joined with its agent name and a last-message preview. */
+interface ChatSummaryRow extends ChatRow {
+  readonly agent_name: string;
+  readonly message_count: number;
+  readonly last_message: string | null;
+}
+
+const PREVIEW_LEN = 140;
+
+const mapSummaryRow = (row: ChatSummaryRow): ChatSummary => ({
+  chat: mapChatRow(row),
+  agentName: row.agent_name,
+  messageCount: row.message_count,
+  lastMessagePreview: row.last_message === null ? null : row.last_message.slice(0, PREVIEW_LEN),
+});
 
 export interface MessagesRepo {
   readonly append: (chatId: ChatId, role: ChatRole, content: string) => Message;
@@ -27,14 +45,30 @@ export interface EventsRepo {
   readonly list: (chatId: ChatId) => ChatStreamEvent[];
 }
 
+/**
+ * Durable turn-progress tracking, separate from the in-process turn hub. One
+ * row per chat: `start` marks it running (upserting over any prior row),
+ * `complete`/`fail` finalize it. `listRunning` powers boot-time reconciliation —
+ * any chat still "running" was mid-turn when the previous process stopped.
+ */
+export interface TurnsRepo {
+  readonly start: (chatId: ChatId) => void;
+  readonly complete: (chatId: ChatId) => void;
+  readonly fail: (chatId: ChatId, message: string) => void;
+  readonly listRunning: () => ChatId[];
+}
+
 export interface ChatsRepo {
   readonly create: (agentId: AgentId, userId: UserId, title: string) => Chat;
   readonly get: (id: ChatId) => Result<Chat, AppError>;
   readonly list: (agentId: AgentId) => Chat[];
+  /** A user's chats as history summaries, newest first, optionally one agent. */
+  readonly listByUser: (userId: UserId, agentId?: AgentId) => ChatSummary[];
   readonly setContinuationToken: (id: ChatId, token: string) => void;
   readonly setTitle: (id: ChatId, title: string) => void;
   readonly messages: MessagesRepo;
   readonly events: EventsRepo;
+  readonly turns: TurnsRepo;
 }
 
 interface EventDataRow {
@@ -49,6 +83,19 @@ export const createChatsRepo = (db: Sqlite): ChatsRepo => {
   const getRow = db.prepare<[string], ChatRow>("SELECT * FROM chats WHERE id = ?");
   const listRows = db.prepare<[string], ChatRow>(
     "SELECT * FROM chats WHERE agent_id = ? ORDER BY updated_at DESC",
+  );
+  // Correlated subqueries carry the preview + count so one read hydrates a summary.
+  // The trailing `(? IS NULL OR agent_id = ?)` makes the agent filter optional.
+  const summarySelect = `
+    SELECT c.*, a.name AS agent_name,
+      (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id) AS message_count,
+      (SELECT content FROM messages m WHERE m.chat_id = c.id ORDER BY m.rowid DESC LIMIT 1) AS last_message
+    FROM chats c
+    JOIN agents a ON a.id = c.agent_id
+    WHERE c.user_id = ? AND (? IS NULL OR c.agent_id = ?)
+    ORDER BY c.updated_at DESC, c.rowid DESC`;
+  const listSummaryRows = db.prepare<[string, string | null, string | null], ChatSummaryRow>(
+    summarySelect,
   );
   const setToken = db.prepare(
     "UPDATE chats SET eve_continuation_token = ?, updated_at = ? WHERE id = ?",
@@ -69,6 +116,19 @@ export const createChatsRepo = (db: Sqlite): ChatsRepo => {
   );
   const listEvents = db.prepare<[string], EventDataRow>(
     "SELECT data_json FROM events WHERE chat_id = ? ORDER BY seq ASC, rowid ASC",
+  );
+
+  const upsertRunningTurn = db.prepare(`
+    INSERT INTO turns (chat_id, status, error_message, started_at, updated_at)
+    VALUES (?, 'running', NULL, ?, ?)
+    ON CONFLICT(chat_id) DO UPDATE SET
+      status = 'running', error_message = NULL, started_at = excluded.started_at, updated_at = excluded.updated_at
+  `);
+  const setTurnStatus = db.prepare(
+    "UPDATE turns SET status = ?, error_message = ?, updated_at = ? WHERE chat_id = ?",
+  );
+  const listRunningTurns = db.prepare<[], { chat_id: string }>(
+    "SELECT chat_id FROM turns WHERE status = 'running'",
   );
 
   const create = (agentId: AgentId, userId: UserId, title: string): Chat => {
@@ -92,6 +152,9 @@ export const createChatsRepo = (db: Sqlite): ChatsRepo => {
   };
 
   const list = (agentId: AgentId): Chat[] => listRows.all(agentId).map(mapChatRow);
+
+  const listByUser = (userId: UserId, agentId?: AgentId): ChatSummary[] =>
+    listSummaryRows.all(userId, agentId ?? null, agentId ?? null).map(mapSummaryRow);
 
   const setContinuationToken = (id: ChatId, token: string): void => {
     setToken.run(token, nowIso(), id);
@@ -126,5 +189,19 @@ export const createChatsRepo = (db: Sqlite): ChatsRepo => {
       }),
   };
 
-  return { create, get, list, setContinuationToken, setTitle, messages, events };
+  const turns: TurnsRepo = {
+    start: (chatId: ChatId): void => {
+      const now = nowIso();
+      upsertRunningTurn.run(chatId, now, now);
+    },
+    complete: (chatId: ChatId): void => {
+      setTurnStatus.run("completed", null, nowIso(), chatId);
+    },
+    fail: (chatId: ChatId, message: string): void => {
+      setTurnStatus.run("error", message, nowIso(), chatId);
+    },
+    listRunning: (): ChatId[] => listRunningTurns.all().map((row) => asId("ChatId", row.chat_id)),
+  };
+
+  return { create, get, list, listByUser, setContinuationToken, setTitle, messages, events, turns };
 };

@@ -67,7 +67,7 @@ export function MarketplacePage() {
   return (
     <>
       <PageHeader
-        title="Marketplace"
+        title="Explore"
         description="Discover and clone agents, knowledgebases, and skills shared by the community."
       />
 

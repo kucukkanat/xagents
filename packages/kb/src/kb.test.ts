@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chunkText } from "./chunk";
+import { chunkText, stitchChunks } from "./chunk";
 import { extractText } from "./extract";
 import { ingestDocument } from "./index";
 
@@ -26,6 +26,34 @@ describe("chunkText", () => {
   test("hard-splits a single oversized paragraph", () => {
     const chunks = chunkText("x".repeat(2500), { maxChars: 1000, overlap: 0 });
     expect(chunks.length).toBe(3);
+  });
+});
+
+describe("stitchChunks", () => {
+  test("empty and singleton inputs", () => {
+    expect(stitchChunks([])).toBe("");
+    expect(stitchChunks(["solo"])).toBe("solo");
+  });
+
+  test("removes the overlap chunkText carries across boundaries", () => {
+    // Three paragraphs that force multiple chunks with a 150-char overlap.
+    const paras = ["A".repeat(500), "B".repeat(500), "C".repeat(500)];
+    const chunks = chunkText(paras.join("\n\n"));
+    expect(chunks.length).toBeGreaterThan(1);
+    // Reconstruction is the normalized text with no duplicated overlap.
+    expect(stitchChunks(chunks.map((c) => c.text))).toBe(paras.join("\n\n"));
+  });
+
+  test("round-trips multi-paragraph prose across chunk boundaries", () => {
+    // Several normal-sized paragraphs that span multiple overlapping chunks.
+    const paras = Array.from(
+      { length: 8 },
+      (_, i) => `Paragraph ${i}: ${"word ".repeat(30).trim()}.`,
+    );
+    const text = paras.join("\n\n");
+    const chunks = chunkText(text);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(stitchChunks(chunks.map((c) => c.text))).toBe(text);
   });
 });
 

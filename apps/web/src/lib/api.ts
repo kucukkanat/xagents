@@ -5,6 +5,7 @@ import type {
   AppErrorCode,
   Chat,
   ChatStreamEvent,
+  ChatSummary,
   ChatWithMessages,
   ClientConfig,
   CreateAgentInput,
@@ -12,6 +13,7 @@ import type {
   CreateKnowledgebaseInput,
   CreateSkillInput,
   GalleryItem,
+  ImportReport,
   KbDocument,
   Knowledgebase,
   KnowledgebaseDetail,
@@ -94,6 +96,52 @@ export const deleteAgent = (id: string): Promise<void> =>
 export const cloneAgent = (id: string): Promise<Agent> =>
   request(`/agents/${id}/clone`, { method: "POST" });
 
+/** Download the agent's materialized eve project as a zip via a transient link. */
+export async function exportAgent(id: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/agents/${id}/export`);
+  } catch {
+    throw new ApiError("internal", "Network error — is the server running?", 0);
+  }
+  if (!res.ok) throw await toApiError(res);
+
+  const blob = await res.blob();
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const filename = /filename="?([^"]+)"?/.exec(disposition)?.[1] ?? `${id}.zip`;
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Import an agent from an export/eve-project zip. Returns the full
+ * {@link ImportReport} on success (200/201) AND on validation failure (422) —
+ * both carry the log trail — so callers render the report either way. Pass
+ * `dryRun` to validate and preview without writing anything.
+ */
+export async function importAgent(file: File, opts?: { dryRun?: boolean }): Promise<ImportReport> {
+  const form = new FormData();
+  form.append("file", file);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/agents/import${opts?.dryRun ? "?dryRun=true" : ""}`, {
+      method: "POST",
+      body: form,
+    });
+  } catch {
+    throw new ApiError("internal", "Network error — is the server running?", 0);
+  }
+  if (res.ok || res.status === 422) return (await res.json()) as ImportReport;
+  throw await toApiError(res);
+}
+
 // --- Knowledgebases --------------------------------------------------------
 export const listKnowledgebases = (): Promise<Knowledgebase[]> => request("/knowledgebases");
 export const getKnowledgebase = (id: string): Promise<KnowledgebaseDetail> =>
@@ -126,35 +174,46 @@ export const cloneSkill = (id: string): Promise<Skill> =>
   request(`/skills/${id}/clone`, { method: "POST" });
 
 // --- Chats -----------------------------------------------------------------
-export const listChats = (agentId: string): Promise<Chat[]> =>
-  request(`/chats?agentId=${agentId}`);
+/** The current user's conversation history; pass an agentId to scope to one agent. */
+export const listChats = (agentId?: string): Promise<ChatSummary[]> =>
+  request(`/chats${agentId ? `?agentId=${agentId}` : ""}`);
 export const getChat = (id: string): Promise<ChatWithMessages> => request(`/chats/${id}`);
 export const createChat = (input: CreateChatInput): Promise<Chat> =>
   request("/chats", { method: "POST", ...json(input) });
 
 /**
- * Streams a chat turn. `EventSource` can't POST, so we POST with fetch, read the
- * body as a stream, split SSE frames on the blank-line delimiter, strip the
- * `data:` prefix, and parse each frame into a `ChatStreamEvent`.
+ * Kick off a turn. Returns as soon as the message is queued — the turn runs in
+ * the background on the server; observe it via {@link streamChat}. A 409 means
+ * a turn is already in progress for this chat.
  */
-export async function* streamChatMessage(
+export const sendMessage = (chatId: string, input: SendMessageInput): Promise<void> =>
+  request(`/chats/${chatId}/messages`, { method: "POST", ...json(input) });
+
+/**
+ * Attach to a chat's live turn over SSE, replaying it from the start and then
+ * tailing until it finishes. Safe to (re)open at any time — after a refresh it
+ * reconnects to the running turn; if nothing is running the stream just closes.
+ */
+export async function* streamChat(
   chatId: string,
-  input: SendMessageInput,
   signal?: AbortSignal,
 ): AsyncGenerator<ChatStreamEvent> {
-  const res = await fetch(`${API_BASE}/chats/${chatId}/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify(input),
+  const res = await fetch(`${API_BASE}/chats/${chatId}/stream`, {
+    headers: { Accept: "text/event-stream" },
     ...(signal ? { signal } : {}),
   });
   if (!res.ok) throw await toApiError(res);
   if (!res.body) throw new ApiError("internal", "Stream body missing", res.status);
+  yield* parseSseFrames(res.body);
+}
 
-  const reader = res.body.getReader();
+/** Split an SSE byte stream on the blank-line delimiter and parse each frame. */
+async function* parseSseFrames(
+  body: ReadableStream<Uint8Array>,
+): AsyncGenerator<ChatStreamEvent> {
+  const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
