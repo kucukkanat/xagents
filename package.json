@@ -2,7 +2,10 @@
   "name": "xagents",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "engines": {
     "node": ">=24"
   },
@@ -29,6 +32,7 @@
     "@ai-sdk/deepseek": "^1.0.0",
     "ai": "^7.0.26",
     "eve": "^0.23.0",
+    "just-bash": "^3.1.0",
     "microsandbox": "^0.6.6",
     "zod": "^4.4.3"
   }
