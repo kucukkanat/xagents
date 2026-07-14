@@ -1,0 +1,12 @@
+{
+  "name": "@xagents/skills",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@xagents/core": "workspace:*",
+    "yaml": "^2.6.1"
+  }
+}

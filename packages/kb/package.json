@@ -1,0 +1,13 @@
+{
+  "name": "@xagents/kb",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@xagents/core": "workspace:*",
+    "@xagents/db": "workspace:*",
+    "unpdf": "^0.12.1"
+  }
+}
