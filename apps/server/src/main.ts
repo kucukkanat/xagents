@@ -1,4 +1,5 @@
 import { serve } from "@hono/node-server";
+import { SANDBOX_DEFAULT_IMAGE, warmSandboxImage } from "@xagents/sandbox";
 import { createApp } from "./app";
 import { createContext } from "./context";
 import { loadConfig, loadEnv } from "./env";
@@ -18,6 +19,15 @@ const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`  sandbox backend: ${config.sandboxBackend}`);
   console.log(`  database:        ${config.databasePath}`);
 });
+
+// Pre-warm the (large) eve sandbox image so the first sandboxed chat isn't
+// blocked on a multi-minute first pull. Fire-and-forget; never blocks the server.
+if (config.sandboxBackend === "microsandbox") {
+  console.log(`  warming sandbox image ${SANDBOX_DEFAULT_IMAGE} in the background…`);
+  void warmSandboxImage().then((r) => {
+    console.log(r.ok ? "  ✓ sandbox image ready" : `  ⚠️  sandbox warm failed: ${r.error.message}`);
+  });
+}
 
 const shutdown = (): void => {
   console.log("\n↓ shutting down…");

@@ -14,3 +14,5 @@ export type { DefineAgentSandboxOptions } from "./define";
 export { defineAgentSandbox } from "./define";
 export type { GenerateSandboxModuleOptions } from "./generate";
 export { generateSandboxModuleSource } from "./generate";
+export { SANDBOX_DEFAULT_IMAGE } from "./image";
+export { warmSandboxImage } from "./warm";
