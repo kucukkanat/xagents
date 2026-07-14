@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { type AppError, type Result, appError, err, ok } from "@xagents/core";
 import type { AgentHost } from "./types";
@@ -40,6 +40,9 @@ export class HostSupervisor {
   readonly #bootTimeoutMs: number;
   readonly #running = new Map<string, Running>();
   readonly #starting = new Map<string, Promise<Result<AgentHost, AppError>>>();
+  /** PIDs of every eve host we currently keep alive (starting or running). A
+   *  microsandbox VM whose parent isn't in here is an orphan we should reap. */
+  readonly #hostPids = new Set<number>();
   readonly #sweeper: NodeJS.Timeout;
 
   constructor(opts: SupervisorOptions) {
@@ -47,7 +50,10 @@ export class HostSupervisor {
     this.#env = opts.env;
     this.#idleMs = opts.idleMs ?? 10 * 60_000;
     this.#bootTimeoutMs = opts.bootTimeoutMs ?? 180_000;
-    this.#sweeper = setInterval(() => this.#reapIdle(), 30_000);
+    this.#sweeper = setInterval(() => {
+      this.#reapIdle();
+      void this.reapOrphanSandboxes();
+    }, 30_000);
     this.#sweeper.unref();
   }
 
@@ -76,13 +82,40 @@ export class HostSupervisor {
     const r = this.#running.get(agentId);
     if (r === undefined) return;
     this.#running.delete(agentId);
+    if (r.proc.pid !== undefined) this.#hostPids.delete(r.proc.pid);
     killProc(r.proc);
   }
 
   stopAll(): void {
     clearInterval(this.#sweeper);
-    for (const [, r] of this.#running) killProc(r.proc);
+    for (const [, r] of this.#running) {
+      if (r.proc.pid !== undefined) this.#hostPids.delete(r.proc.pid);
+      killProc(r.proc);
+    }
     this.#running.clear();
+  }
+
+  /**
+   * SIGKILL every leftover microVM whose eve host we no longer own. microsandbox
+   * runs each `msb sandbox` VM in its own process group so it OUTLIVES its
+   * creator: when an eve host is stopped (idle-reap, agent edit, shutdown) or
+   * crashes, its VMs reparent to init and keep running forever (~1 GiB each),
+   * and microsandbox's own registry drifts out of sync with the live processes.
+   * So we reap at the OS level — any `eve-sbx-*` VM not parented by a host in
+   * `#hostPids` is an orphan. Assumes a single server instance owns these VMs.
+   */
+  async reapOrphanSandboxes(): Promise<number> {
+    const pids = selectOrphanSandboxPids(await psSnapshot(), this.#hostPids);
+    let reaped = 0;
+    for (const pid of pids) {
+      try {
+        process.kill(pid, "SIGKILL");
+        reaped += 1;
+      } catch {
+        // Raced with the process exiting between the snapshot and the kill — fine.
+      }
+    }
+    return reaped;
   }
 
   async #start(agentId: string): Promise<Result<AgentHost, AppError>> {
@@ -92,6 +125,16 @@ export class HostSupervisor {
       env: { ...process.env, ...this.#env },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    // Record the pid from spawn (not only after a successful boot) so a host
+    // that dies while booting still has its VMs recognized as reapable.
+    const { pid } = proc;
+    if (pid !== undefined) this.#hostPids.add(pid);
+    proc.once("exit", () => {
+      if (pid !== undefined) this.#hostPids.delete(pid);
+      // Drop the record if this exact process dies so the next call restarts it.
+      const cur = this.#running.get(agentId);
+      if (cur?.proc === proc) this.#running.delete(agentId);
+    });
 
     const origin = await waitForOrigin(proc, this.#bootTimeoutMs);
     if (!origin.ok) {
@@ -100,11 +143,6 @@ export class HostSupervisor {
     }
     const host: AgentHost = { agentId, origin: origin.value };
     this.#running.set(agentId, { host, proc, lastUsed: Date.now() });
-    proc.once("exit", () => {
-      // Drop the record if this exact process dies so the next call restarts it.
-      const cur = this.#running.get(agentId);
-      if (cur?.proc === proc) this.#running.delete(agentId);
-    });
     return ok(host);
   }
 
@@ -159,3 +197,37 @@ const killProc = (proc: ChildProcess): void => {
     if (!proc.killed) proc.kill("SIGKILL");
   }, 2_000).unref();
 };
+
+/** Command-line shape of a microsandbox microVM an eve host launched. `msb` must
+ *  be the executable itself (command start or a `/`-path), so a `ps`/`grep` whose
+ *  *arguments* merely mention the pattern is never mistaken for a VM to kill. */
+const SANDBOX_PROC_RE = /(?:^|\/)msb\s+sandbox\b.*--name\s+eve-sbx-/;
+
+/**
+ * From a `ps -Ao pid=,ppid=,command=` snapshot, the pids of eve sandbox VMs
+ * whose parent isn't one of `hostPids` — the orphans to reap. Pure, so the reap
+ * decision is unit-testable without touching real processes.
+ */
+export const selectOrphanSandboxPids = (
+  psSnapshotText: string,
+  hostPids: ReadonlySet<number>,
+): number[] => {
+  const pids: number[] = [];
+  for (const line of psSnapshotText.split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (m === null) continue;
+    const [, pidStr, ppidStr, command] = m;
+    if (pidStr === undefined || ppidStr === undefined || command === undefined) continue;
+    if (!SANDBOX_PROC_RE.test(command) || hostPids.has(Number(ppidStr))) continue;
+    pids.push(Number(pidStr));
+  }
+  return pids;
+};
+
+/** Every process as `<pid> <ppid> <command>` lines; empty string on failure. */
+const psSnapshot = (): Promise<string> =>
+  new Promise((resolve) => {
+    execFile("ps", ["-Ao", "pid=,ppid=,command="], { maxBuffer: 16 * 1024 * 1024 }, (e, out) =>
+      resolve(e ? "" : out),
+    );
+  });

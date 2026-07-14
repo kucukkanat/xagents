@@ -1,19 +1,28 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   BookOpenIcon,
   BotIcon,
   CompassIcon,
-  MenuIcon,
   MessageSquareIcon,
+  PlusIcon,
+  SearchIcon,
   SparklesIcon,
   type LucideIcon,
 } from "lucide-react";
-import { NavLink, Outlet } from "react-router-dom";
-import { Dialog as DialogPrimitive } from "radix-ui";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { BrandMark, Wordmark } from "@/components/brand-mark";
+import { CommandPalette } from "@/components/command-palette";
+import { NewChatDialog } from "@/components/new-chat-button";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
 import { useConfig } from "@/lib/config-context";
 import { cn } from "@/lib/utils";
+
+// Label the shortcut hint per-platform; the listener accepts either modifier.
+const IS_MAC =
+  typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.userAgent);
+const SEARCH_HINT = IS_MAC ? "⌘K" : "Ctrl K";
 
 interface NavItem {
   readonly to: string;
@@ -50,6 +59,9 @@ const NAV: readonly NavSection[] = [
   },
 ];
 
+/** Every primary destination, flattened for the mobile bottom tab bar. */
+const MOBILE_TABS: readonly NavItem[] = NAV.flatMap((section) => section.items);
+
 const initials = (name: string): string =>
   name
     .split(/\s+/)
@@ -60,17 +72,13 @@ const initials = (name: string): string =>
 
 function Brand() {
   return (
-    <div className="flex h-14 items-center gap-2 border-b px-5">
-      <div className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-        <BotIcon className="size-4" />
-      </div>
-      <span className="text-sm font-semibold tracking-tight">xagents</span>
+    <div className="flex h-14 items-center border-b px-5">
+      <Wordmark />
     </div>
   );
 }
 
-/** `onNavigate` lets the mobile drawer close itself when a link is tapped. */
-function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
+function NavLinks() {
   return (
     <nav className="flex-1 space-y-6 p-3">
       {NAV.map((section, i) => (
@@ -85,18 +93,31 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
               key={to}
               to={to}
               end={to === "/"}
-              onClick={onNavigate}
               className={({ isActive }) =>
                 cn(
-                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                  "press relative flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors duration-200 ease-fluid",
+                  // Accent is reserved for the active destination; everything
+                  // else stays neutral and only tints on hover.
                   isActive
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                    : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
+                    ? "bg-brand-subtle text-brand"
+                    : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                 )
               }
             >
-              <Icon className="size-4" />
-              {label}
+              {({ isActive }) => (
+                <>
+                  {/* Left rail reinforces the selected item within the pill. */}
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-brand transition-opacity duration-200",
+                      isActive ? "opacity-100" : "opacity-0",
+                    )}
+                  />
+                  <Icon className="size-4 shrink-0" />
+                  {label}
+                </>
+              )}
             </NavLink>
           ))}
         </div>
@@ -123,53 +144,177 @@ function UserFooter() {
   );
 }
 
-function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
+/** Sidebar entry point to the ⌘K palette — looks like a search box, opens the launcher. */
+function SearchTrigger({ onOpen }: { onOpen: () => void }) {
+  return (
+    <div className="px-3 pt-3">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="press flex w-full items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+      >
+        <SearchIcon className="size-4 shrink-0" />
+        <span className="flex-1 text-left">Search…</span>
+        <kbd className="pointer-events-none rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
+          {SEARCH_HINT}
+        </kbd>
+      </button>
+    </div>
+  );
+}
+
+/** Primary sidebar action: opens the agent picker to start a fresh chat. */
+function SidebarNewChat() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="px-3 pt-2">
+      <Button
+        variant="brand"
+        onClick={() => setOpen(true)}
+        className="press w-full justify-start"
+      >
+        <PlusIcon className="size-4 shrink-0" />
+        New chat
+      </Button>
+      <NewChatDialog open={open} onOpenChange={setOpen} />
+    </div>
+  );
+}
+
+function SidebarBody({ onOpenSearch }: { onOpenSearch: () => void }) {
   return (
     <>
       <Brand />
-      <NavLinks onNavigate={onNavigate} />
+      <SearchTrigger onOpen={onOpenSearch} />
+      <SidebarNewChat />
+      <NavLinks />
       <UserFooter />
     </>
   );
 }
 
+/** Compact identity chip for the mobile top bar (the sidebar footer is desktop-only). */
+function MobileUserChip() {
+  const { currentUser } = useConfig();
+  return (
+    <Avatar className="size-8">
+      <AvatarFallback className="text-xs">
+        {initials(currentUser.displayName)}
+      </AvatarFallback>
+    </Avatar>
+  );
+}
+
+/**
+ * Below `md`, primary navigation lives in a fixed bottom bar (thumb-reachable)
+ * rather than a hamburger drawer. Callers hide it on chat routes so it never
+ * covers the composer.
+ */
+function MobileTabBar() {
+  return (
+    <nav
+      aria-label="Primary"
+      className="fixed inset-x-0 bottom-0 z-40 border-t bg-sidebar/95 pb-safe text-sidebar-foreground backdrop-blur-md md:hidden"
+    >
+      <div className="grid grid-cols-5">
+        {MOBILE_TABS.map(({ to, label, icon: Icon }) => (
+          <NavLink
+            key={to}
+            to={to}
+            end={to === "/"}
+            className={({ isActive }) =>
+              cn(
+                "press relative flex min-h-14 flex-col items-center justify-center gap-1 px-1 transition-colors duration-200",
+                isActive ? "text-brand" : "text-muted-foreground",
+              )
+            }
+          >
+            {({ isActive }) => (
+              <>
+                {/* Top indicator marks the active tab. */}
+                <span
+                  aria-hidden
+                  className={cn(
+                    "absolute inset-x-3 top-0 h-0.5 rounded-full bg-brand transition-opacity duration-200",
+                    isActive ? "opacity-100" : "opacity-0",
+                  )}
+                />
+                <Icon className="size-5 shrink-0" />
+                <span className="w-full truncate text-center text-[10px] font-medium leading-none">
+                  {label}
+                </span>
+              </>
+            )}
+          </NavLink>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
 export function AppShell() {
-  const [open, setOpen] = useState(false);
+  // Chat owns the full viewport height (fixed composer), so the bottom tab bar
+  // steps aside there to avoid overlapping it.
+  const { pathname } = useLocation();
+  const isChatRoute = pathname.startsWith("/chat/");
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  // ⌘K / Ctrl+K toggles the palette from anywhere in the app.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      // Ignore auto-repeat from a held chord — otherwise the repeated keydowns
+      // rapidly toggle the palette open/closed (Ctrl+K on Windows/Linux).
+      if (e.repeat) return;
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearchOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     <div className="flex h-full flex-col md:flex-row">
-      {/* Mobile top bar with a hamburger that opens the same nav in a drawer. */}
-      <header className="flex h-14 items-center gap-2 border-b bg-sidebar px-4 text-sidebar-foreground md:hidden">
-        <DialogPrimitive.Root open={open} onOpenChange={setOpen}>
-          <DialogPrimitive.Trigger className="-ml-1 flex size-9 items-center justify-center rounded-md transition-colors hover:bg-sidebar-accent">
-            <MenuIcon className="size-5" />
-            <span className="sr-only">Open navigation</span>
-          </DialogPrimitive.Trigger>
-          <DialogPrimitive.Portal>
-            <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
-            <DialogPrimitive.Content
-              aria-describedby={undefined}
-              className="fixed inset-y-0 left-0 z-50 flex w-64 flex-col bg-sidebar text-sidebar-foreground shadow-lg outline-none data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left data-[state=open]:animate-in data-[state=open]:slide-in-from-left"
-            >
-              <DialogPrimitive.Title className="sr-only">Navigation</DialogPrimitive.Title>
-              <SidebarBody onNavigate={() => setOpen(false)} />
-            </DialogPrimitive.Content>
-          </DialogPrimitive.Portal>
-        </DialogPrimitive.Root>
+      {/* Mobile top bar: brand + theme toggle live here since the sidebar
+          footer is desktop-only. Navigation moves to the bottom tab bar. */}
+      <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-sidebar px-4 text-sidebar-foreground md:hidden">
         <div className="flex items-center gap-2">
-          <div className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-            <BotIcon className="size-4" />
-          </div>
+          <BrandMark className="size-7" />
           <span className="text-sm font-semibold tracking-tight">xagents</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            aria-label="Search"
+            onClick={() => setSearchOpen(true)}
+            className="press flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          >
+            <SearchIcon className="size-5" />
+          </button>
+          <MobileUserChip />
+          <ThemeToggle />
         </div>
       </header>
 
       <aside className="hidden w-60 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground md:flex">
-        <SidebarBody />
+        <SidebarBody onOpenSearch={() => setSearchOpen(true)} />
       </aside>
 
-      <main className="min-h-0 flex-1 overflow-hidden">
+      <CommandPalette open={searchOpen} onOpenChange={setSearchOpen} />
+
+      {/* Reserve space on mobile non-chat routes so the last item clears the
+          fixed tab bar (its content + the home-indicator safe area). */}
+      <main
+        className={cn(
+          "min-h-0 flex-1 overflow-hidden",
+          !isChatRoute && "pb-[calc(3.5rem_+_env(safe-area-inset-bottom))] md:pb-0",
+        )}
+      >
         <Outlet />
       </main>
+
+      {isChatRoute ? null : <MobileTabBar />}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeftIcon, SaveIcon } from "lucide-react";
+import { ArrowLeftIcon, CheckIcon, SaveIcon } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type {
   CreateAgentInput,
@@ -161,7 +161,7 @@ export function AgentEditorPage() {
         title={isEdit ? "Edit agent" : "New agent"}
         description="Give your agent a persona, a model, and optional knowledge and skills."
         action={
-          <Button variant="ghost" asChild>
+          <Button variant="ghost" className="press" asChild>
             <Link to={isEdit && id ? `/agents/${id}` : "/agents"}>
               <ArrowLeftIcon /> Back
             </Link>
@@ -169,7 +169,7 @@ export function AgentEditorPage() {
         }
       />
 
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-6 lg:grid-cols-3 animate-in fade-in-0 slide-in-from-bottom-2 duration-300 ease-out">
         <div className="space-y-6 lg:col-span-2">
           <Field label="Name" htmlFor="name">
             <Input
@@ -265,7 +265,11 @@ export function AgentEditorPage() {
       </div>
 
       <div className="flex justify-end">
-        <Button onClick={onSave} disabled={saving}>
+        <Button
+          className="w-full bg-brand text-brand-foreground hover:bg-brand/90 press sm:w-auto"
+          onClick={onSave}
+          disabled={saving}
+        >
           <SaveIcon /> {saving ? "Saving…" : isEdit ? "Save changes" : "Create agent"}
         </Button>
       </div>
@@ -305,9 +309,16 @@ function AttachList({
 }) {
   return (
     <div className="space-y-2">
-      <Label>{title}</Label>
+      <Label className="flex items-center gap-2">
+        {title}
+        {selected.length > 0 ? (
+          <span className="text-xs font-normal text-brand-muted-foreground">
+            {selected.length} selected
+          </span>
+        ) : null}
+      </Label>
       <Card>
-        <CardContent className="max-h-48 space-y-1 overflow-y-auto p-2">
+        <CardContent className="max-h-48 space-y-1 overflow-y-auto p-2 scrollbar-subtle">
           {loading ? (
             <Skeleton className="h-8 w-full" />
           ) : options.length === 0 ? (
@@ -320,18 +331,19 @@ function AttachList({
                   key={o.id}
                   type="button"
                   onClick={() => onToggle(o.id)}
+                  // Selected rows adopt the brand tint; the rest stay neutral.
                   className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-                    active ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
+                    "press flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                    active ? "bg-brand-subtle text-foreground" : "hover:bg-accent/50",
                   )}
                 >
                   <span
                     className={cn(
-                      "flex size-4 shrink-0 items-center justify-center rounded border text-[10px]",
-                      active ? "border-primary bg-primary text-primary-foreground" : "border-input",
+                      "flex size-4 shrink-0 items-center justify-center rounded border transition-colors",
+                      active ? "border-brand bg-brand text-brand-foreground" : "border-input",
                     )}
                   >
-                    {active ? "✓" : ""}
+                    {active ? <CheckIcon className="size-3" /> : null}
                   </span>
                   <span className="truncate">{o.name}</span>
                 </button>

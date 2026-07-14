@@ -1,10 +1,12 @@
+import type { ReactElement } from "react";
+import { CopyButton } from "@/components/copy-button";
 import { cn } from "@/lib/utils";
 
 /**
  * Minimal, dependency-free Markdown rendering: enough for chat bubbles and
- * previews (code fences, inline code, bold, headings, lists) without pulling in
- * a parser. Content is split into blocks and rendered as React nodes, so no
- * `dangerouslySetInnerHTML` and no XSS surface.
+ * previews (code fences, inline code, bold, links, headings, lists) without
+ * pulling in a parser. Content is split into blocks and rendered as React
+ * nodes, so no `dangerouslySetInnerHTML` and no XSS surface.
  */
 export function Markdown({ content, className }: { content: string; className?: string }) {
   if (!content.trim()) return null;
@@ -12,18 +14,13 @@ export function Markdown({ content, className }: { content: string; className?: 
     <div className={cn("space-y-3 text-sm leading-relaxed", className)}>
       {splitBlocks(content).map((block, i) =>
         block.type === "code" ? (
-          <pre
-            key={i}
-            className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs text-foreground"
-          >
-            <code>{block.text}</code>
-          </pre>
+          <CodeBlock key={i} text={block.text} lang={block.lang} />
         ) : block.type === "heading" ? (
-          <p key={i} className="text-base font-semibold">
+          <p key={i} className="text-base font-semibold tracking-tight">
             {inline(block.text)}
           </p>
         ) : block.type === "list" ? (
-          <ul key={i} className="list-disc space-y-1 pl-5">
+          <ul key={i} className="list-disc space-y-1 pl-5 marker:text-muted-foreground">
             {block.items.map((item, j) => (
               <li key={j}>{inline(item)}</li>
             ))}
@@ -38,8 +35,25 @@ export function Markdown({ content, className }: { content: string; className?: 
   );
 }
 
+/** A fenced code block with a language label and a copy affordance. */
+function CodeBlock({ text, lang }: { text: string; lang?: string }) {
+  return (
+    <div className="overflow-hidden rounded-lg border bg-muted/60">
+      <div className="flex items-center justify-between border-b bg-muted/40 py-1 pl-3 pr-1">
+        <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+          {lang || "code"}
+        </span>
+        <CopyButton value={text} />
+      </div>
+      <pre className="overflow-x-auto p-3 font-mono text-xs text-foreground">
+        <code>{text}</code>
+      </pre>
+    </div>
+  );
+}
+
 type Block =
-  | { type: "code"; text: string }
+  | { type: "code"; text: string; lang?: string }
   | { type: "heading"; text: string }
   | { type: "list"; items: string[] }
   | { type: "paragraph"; text: string };
@@ -51,6 +65,7 @@ function splitBlocks(src: string): Block[] {
   while (i < lines.length) {
     const line = lines[i] ?? "";
     if (line.startsWith("```")) {
+      const lang = line.slice(3).trim();
       const body: string[] = [];
       i += 1;
       while (i < lines.length && !(lines[i] ?? "").startsWith("```")) {
@@ -58,7 +73,7 @@ function splitBlocks(src: string): Block[] {
         i += 1;
       }
       i += 1; // closing fence
-      blocks.push({ type: "code", text: body.join("\n") });
+      blocks.push({ type: "code", text: body.join("\n"), lang: lang || undefined });
       continue;
     }
     if (/^#{1,6}\s/.test(line)) {
@@ -89,10 +104,14 @@ function splitBlocks(src: string): Block[] {
   return blocks;
 }
 
-/** Render inline `code` and **bold** spans. */
-function inline(text: string): (string | React.ReactElement)[] {
-  const parts: (string | React.ReactElement)[] = [];
-  const regex = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+/** Only allow safe, non-javascript link targets. */
+const safeHref = (href: string): string | undefined =>
+  /^(https?:\/\/|\/)/i.test(href) ? href : undefined;
+
+/** Render inline `code`, **bold**, and [links](url) spans. */
+function inline(text: string): (string | ReactElement)[] {
+  const parts: (string | ReactElement)[] = [];
+  const regex = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g;
   let last = 0;
   let key = 0;
   for (const match of text.matchAll(regex)) {
@@ -105,12 +124,30 @@ function inline(text: string): (string | React.ReactElement)[] {
           {token.slice(1, -1)}
         </code>,
       );
-    } else {
+    } else if (token.startsWith("**")) {
       parts.push(
         <strong key={key++} className="font-semibold">
           {token.slice(2, -2)}
         </strong>,
       );
+    } else {
+      const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
+      const href = link ? safeHref(link[2] ?? "") : undefined;
+      if (link && href) {
+        parts.push(
+          <a
+            key={key++}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium text-brand underline decoration-brand/40 underline-offset-2 transition-colors hover:decoration-brand"
+          >
+            {link[1]}
+          </a>,
+        );
+      } else {
+        parts.push(token);
+      }
     }
     last = idx + token.length;
   }

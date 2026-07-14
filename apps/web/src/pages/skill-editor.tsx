@@ -96,67 +96,85 @@ export function SkillEditorPage() {
         }
       />
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <div className="space-y-2 lg:col-span-1">
-          <Label htmlFor="skill-name">Name</Label>
-          <Input id="skill-name" value={name} onChange={(e) => setName(e.target.value)} />
-        </div>
-        <div className="space-y-2 lg:col-span-2">
-          <Label htmlFor="skill-desc">Description</Label>
-          <Input
-            id="skill-desc"
-            value={description}
-            placeholder="When and why an agent should use this skill"
-            onChange={(e) => setDescription(e.target.value)}
-          />
-        </div>
-      </div>
+      <div className="space-y-6 animate-in fade-in-0 slide-in-from-bottom-2 duration-300 ease-out">
+        <Card>
+          <CardContent className="grid gap-6 lg:grid-cols-3">
+            <div className="space-y-2 lg:col-span-1">
+              <Label htmlFor="skill-name">Name</Label>
+              <Input id="skill-name" value={name} onChange={(e) => setName(e.target.value)} />
+              <p className="text-xs text-muted-foreground">Becomes the SKILL.md frontmatter name.</p>
+            </div>
+            <div className="space-y-2 lg:col-span-2">
+              <Label htmlFor="skill-desc">Description</Label>
+              <Input
+                id="skill-desc"
+                value={description}
+                placeholder="When and why an agent should use this skill"
+                onChange={(e) => setDescription(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Agents read this to decide when to reach for the skill — be specific.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
 
-      <div className="space-y-2">
-        <Label>Body (Markdown)</Label>
-        <Tabs defaultValue="edit">
-          <TabsList>
-            <TabsTrigger value="edit">Edit</TabsTrigger>
-            <TabsTrigger value="preview">Preview</TabsTrigger>
-          </TabsList>
-          <TabsContent value="edit">
-            <Textarea
-              value={body}
-              placeholder={"## Instructions\n\nExplain how the skill works…"}
-              className="min-h-72 font-mono text-sm"
-              onChange={(e) => setBody(e.target.value)}
-            />
-          </TabsContent>
-          <TabsContent value="preview">
-            <Card>
-              <CardContent className="min-h-72 py-4">
-                {body.trim() ? (
-                  <Markdown content={body} />
-                ) : (
-                  <p className="text-sm text-muted-foreground">Nothing to preview yet.</p>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
-      </div>
-
-      <div className="flex items-center justify-between">
-        <div className="w-48 space-y-2">
-          <Label htmlFor="skill-vis">Visibility</Label>
-          <Select value={visibility} onValueChange={(v) => setVisibility(v as Visibility)}>
-            <SelectTrigger id="skill-vis" className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="private">Private</SelectItem>
-              <SelectItem value="public">Public (marketplace)</SelectItem>
-            </SelectContent>
-          </Select>
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Label>Body (Markdown)</Label>
+            <span className="text-xs text-muted-foreground">
+              Written below the auto-generated frontmatter
+            </span>
+          </div>
+          <Tabs defaultValue="edit">
+            <TabsList>
+              <TabsTrigger value="edit">Edit</TabsTrigger>
+              <TabsTrigger value="preview">Preview</TabsTrigger>
+            </TabsList>
+            <TabsContent value="edit">
+              <Textarea
+                value={body}
+                placeholder={"## Instructions\n\nExplain how the skill works…"}
+                className="scrollbar-subtle min-h-72 font-mono text-sm"
+                onChange={(e) => setBody(e.target.value)}
+              />
+            </TabsContent>
+            <TabsContent value="preview">
+              <Card>
+                <CardContent className="min-h-72 py-4">
+                  {body.trim() ? (
+                    <Markdown content={body} />
+                  ) : (
+                    <p className="text-sm text-muted-foreground">Nothing to preview yet.</p>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
         </div>
-        <Button onClick={onSave} disabled={saving}>
-          <SaveIcon /> {saving ? "Saving…" : isEdit ? "Save changes" : "Create skill"}
-        </Button>
+
+        <div className="flex flex-col gap-4 border-t pt-6 sm:flex-row sm:items-end sm:justify-between">
+          <div className="w-full space-y-2 sm:w-48">
+            <Label htmlFor="skill-vis">Visibility</Label>
+            <Select value={visibility} onValueChange={(v) => setVisibility(v as Visibility)}>
+              <SelectTrigger id="skill-vis" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="private">Private</SelectItem>
+                <SelectItem value="public">Public (marketplace)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <Button
+            size="lg"
+            className="press w-full sm:w-auto"
+            onClick={onSave}
+            disabled={saving}
+          >
+            <SaveIcon /> {saving ? "Saving…" : isEdit ? "Save changes" : "Create skill"}
+          </Button>
+        </div>
       </div>
     </>
   );

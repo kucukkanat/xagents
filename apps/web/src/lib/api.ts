@@ -180,6 +180,16 @@ export const listChats = (agentId?: string): Promise<ChatSummary[]> =>
 export const getChat = (id: string): Promise<ChatWithMessages> => request(`/chats/${id}`);
 export const createChat = (input: CreateChatInput): Promise<Chat> =>
   request("/chats", { method: "POST", ...json(input) });
+export const renameChat = (id: string, title: string): Promise<Chat> =>
+  request(`/chats/${id}`, { method: "PATCH", ...json({ title }) });
+export const deleteChat = (id: string): Promise<void> =>
+  request(`/chats/${id}`, { method: "DELETE" });
+/** Stop the in-flight turn for a chat. Resolves to whether a turn was actually running. */
+export const cancelChat = (id: string): Promise<{ cancelled: boolean }> =>
+  request(`/chats/${id}/cancel`, { method: "POST" });
+/** Re-run the last user message after a failed turn (no duplicate user message). */
+export const retryChat = (id: string): Promise<void> =>
+  request(`/chats/${id}/retry`, { method: "POST" });
 
 /**
  * Kick off a turn. Returns as soon as the message is queued — the turn runs in

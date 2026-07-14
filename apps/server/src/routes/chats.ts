@@ -6,6 +6,7 @@ import {
   type ChatWithMessages,
   CreateChatInput,
   SendMessageInput,
+  UpdateChatInput,
   appError,
   asId,
   newId,
@@ -58,17 +59,86 @@ export const chatRoutes = (ctx: AppContext): Hono => {
     const id = asId("ChatId", c.req.param("id"));
     const chat = ctx.db.chats.get(id);
     if (!chat.ok) return sendError(c, chat.error);
+    const agent = ctx.db.agents.get(chat.value.agentId);
     const streaming = ctx.turns.isActive(id);
     // While a turn is live, the SSE stream replays its full buffer, so the
     // client reconstructs from there — no need to also ship it here.
     const pending = streaming ? [] : pendingEvents(ctx.db.chats.events.list(id));
     const body: ChatWithMessages = {
       chat: chat.value,
+      agentName: agent.ok ? agent.value.name : "Agent",
       messages: ctx.db.chats.messages.list(id),
       pending,
       streaming,
     };
     return c.json(body);
+  });
+
+  // Rename a conversation.
+  app.patch("/:id", async (c) => {
+    const id = asId("ChatId", c.req.param("id"));
+    const chat = ctx.db.chats.get(id);
+    if (!chat.ok) return sendError(c, chat.error);
+    const body = parseBody(UpdateChatInput, await readJson(c));
+    if (!body.ok) return sendError(c, body.error);
+    ctx.db.chats.setTitle(id, body.value.title);
+    const updated = ctx.db.chats.get(id);
+    if (!updated.ok) return sendError(c, updated.error);
+    return c.json(updated.value);
+  });
+
+  // Delete a conversation (cascades to its messages, events, and turn row).
+  app.delete("/:id", (c) => {
+    const id = asId("ChatId", c.req.param("id"));
+    const chat = ctx.db.chats.get(id);
+    if (!chat.ok) return sendError(c, chat.error);
+    // Stop any in-flight turn first so its producer doesn't write to a dead chat.
+    ctx.turns.cancel(id);
+    ctx.db.chats.delete(id);
+    return c.body(null, 204);
+  });
+
+  // Re-run the last user message after a failure — without appending a
+  // duplicate user turn. The continuation token only advances on completion, so
+  // a failed turn left it untouched: replaying the same message is a true retry.
+  app.post("/:id/retry", (c) => {
+    const id = asId("ChatId", c.req.param("id"));
+    const chat = ctx.db.chats.get(id);
+    if (!chat.ok) return sendError(c, chat.error);
+    if (ctx.turns.isActive(id)) {
+      return sendError(c, appError("conflict", "a turn is already in progress for this chat"));
+    }
+    const messages = ctx.db.chats.messages.list(id);
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    if (lastUser === undefined) {
+      return sendError(c, appError("not_found", "no message to retry"));
+    }
+    const resume = decodeResume(chat.value.eveContinuationToken);
+    ctx.db.chats.turns.start(id);
+    const started = ctx.turns.start(id, () =>
+      produceTurn(ctx, id, chat.value.agentId, lastUser.content, resume),
+    );
+    if (!started) {
+      return sendError(c, appError("conflict", "a turn is already in progress for this chat"));
+    }
+    return c.json({ streaming: true }, 202);
+  });
+
+  // Stop the in-flight turn for this chat ("stop generating"). Idempotent: a
+  // no-op (still 200) when nothing is running.
+  app.post("/:id/cancel", (c) => {
+    const id = asId("ChatId", c.req.param("id"));
+    const chat = ctx.db.chats.get(id);
+    if (!chat.ok) return sendError(c, chat.error);
+    const cancelled = ctx.turns.cancel(id);
+    if (cancelled) {
+      // The hub unwound the producer, so persist the terminal state here — the
+      // interruption event makes a reload show the stopped turn, not a hang.
+      const ev: ChatStreamEvent = { type: "error", message: "Generation stopped." };
+      ctx.db.chats.events.append(id, ctx.db.chats.events.list(id).length, ev);
+      ctx.db.chats.turns.fail(id, "Generation stopped.");
+    }
+    return c.json({ cancelled });
   });
 
   app.post("/:id/messages", async (c) => {
@@ -161,6 +231,7 @@ async function* produceTurn(
     yield { type: "status", state: "thinking" };
 
     let seq = ctx.db.chats.events.list(id).length;
+    let finalized = false;
     for await (const ev of runChatTurn({
       host: host.value,
       chatId: id,
@@ -173,9 +244,20 @@ async function* produceTurn(
         ctx.db.chats.messages.append(id, "assistant", ev.text);
         ctx.db.chats.setContinuationToken(id, ev.continuationToken);
         ctx.db.chats.turns.complete(id);
+        finalized = true;
+      } else if (ev.type === "error") {
+        // runChatTurn signals a mid-stream failure by *yielding* an error and
+        // returning (it never throws), so finalize the durable turn here — else
+        // the row is stuck "running" forever and every reboot re-flags it as
+        // "interrupted" (see reconcileInterruptedTurns).
+        ctx.db.chats.turns.fail(id, ev.message);
+        finalized = true;
       }
       yield ev;
     }
+    // Neither a completion nor an error terminated the stream: don't leave the
+    // turn dangling as "running".
+    if (!finalized) yield fail("the agent ended the turn without a response");
   } catch (cause) {
     yield fail(cause instanceof Error ? cause.message : "turn failed");
   }

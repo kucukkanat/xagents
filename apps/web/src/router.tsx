@@ -1,5 +1,7 @@
-import { createBrowserRouter, Link } from "react-router-dom";
+import { createBrowserRouter, Link, Navigate } from "react-router-dom";
+import { CompassIcon } from "lucide-react";
 import { AppShell, PaddedLayout } from "@/components/app-shell";
+import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
 import { AgentDetailPage } from "@/pages/agent-detail";
 import { AgentEditorPage } from "@/pages/agent-editor";
@@ -14,12 +16,18 @@ import { SkillsListPage } from "@/pages/skills-list";
 
 function NotFound() {
   return (
-    <div className="flex flex-col items-center gap-4 py-24 text-center">
-      <p className="text-3xl font-semibold">404</p>
-      <p className="text-muted-foreground">This page doesn&apos;t exist.</p>
-      <Button asChild>
-        <Link to="/">Back to chats</Link>
-      </Button>
+    <div className="py-16">
+      <EmptyState
+        icon={CompassIcon}
+        tone="brand"
+        title="This page drifted off the map"
+        description="The link may be broken or the page may have moved. Let's get you back."
+        action={
+          <Button asChild>
+            <Link to="/">Back to chats</Link>
+          </Button>
+        }
+      />
     </div>
   );
 }
@@ -33,6 +41,7 @@ export const router = createBrowserRouter([
         children: [
           { index: true, element: <ConversationsPage /> },
           { path: "explore", element: <MarketplacePage /> },
+          { path: "marketplace", element: <Navigate to="/explore" replace /> },
           { path: "agents", element: <AgentsListPage /> },
           { path: "agents/new", element: <AgentEditorPage /> },
           { path: "agents/:id", element: <AgentDetailPage /> },

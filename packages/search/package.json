@@ -1,0 +1,11 @@
+{
+  "name": "@xagents/search",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "fuse.js": "^7.1.0"
+  }
+}

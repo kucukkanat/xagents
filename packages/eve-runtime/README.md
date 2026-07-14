@@ -46,6 +46,31 @@ replay-from-start stream from re-emitting prior turns.
 
 ## Sandbox
 
-The generated `agent/sandbox.ts` pins the backend from `@xagents/sandbox`
-(microsandbox by default). Built-in eve tools (`bash`, `read_file`, …) run inside that
-microVM; their `tool_result` events are flagged `sandbox: true`.
+**eve owns the sandbox lifecycle; we own the host process.** The generated
+`agent/sandbox.ts` only *declares* the backend from `@xagents/sandbox`
+(microsandbox by default). eve — running inside the `eve dev` host — creates the
+microVM when a built-in tool (`bash`, `read_file`, …) fires, execs in it, and
+tears it down. We never call create/exec/stop on a chat's VM ourselves; those
+tools' `tool_result` events are flagged `sandbox: true`.
+
+`HostSupervisor` manages the **`eve dev` processes**, not the VMs — with one
+exception microsandbox forces on us.
+
+### Orphaned-microVM reaping
+
+microsandbox launches each VM (`msb sandbox …`) in its **own process group**, so
+it deliberately *outlives its creator*. Killing an eve host — on idle-reap, an
+agent edit, a `SIGKILL`, or a `tsx watch` restart — therefore does **not** stop
+its VMs: they reparent to init and keep running (~1 GiB each) forever, and
+microsandbox's own registry drifts out of sync with the live processes. eve does
+not clean them up, so we do.
+
+`HostSupervisor.reapOrphanSandboxes()` snapshots the process table (`ps`) and
+`SIGKILL`s every `eve-sbx-*` VM whose parent isn't a host we currently own
+(tracked in `#hostPids`, populated at spawn). It runs at three points: server
+**startup** (clears a prior run's leftovers — the `reconcileInterruptedTurns`
+analog), the **30 s idle sweep** (VMs orphaned mid-session), and **shutdown**
+(our own hosts' VMs, since killing the hosts won't). The reap *decision* is the
+pure, unit-tested `selectOrphanSandboxPids`. It assumes a single server instance
+owns these VMs, and is microsandbox-specific: under `docker` / `justbash` there
+are no such processes and it is a harmless no-op.

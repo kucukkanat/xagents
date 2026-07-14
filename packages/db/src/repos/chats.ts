@@ -66,6 +66,8 @@ export interface ChatsRepo {
   readonly listByUser: (userId: UserId, agentId?: AgentId) => ChatSummary[];
   readonly setContinuationToken: (id: ChatId, token: string) => void;
   readonly setTitle: (id: ChatId, title: string) => void;
+  /** Delete a chat and, via ON DELETE CASCADE, its messages/events/turn row. */
+  readonly delete: (id: ChatId) => void;
   readonly messages: MessagesRepo;
   readonly events: EventsRepo;
   readonly turns: TurnsRepo;
@@ -101,6 +103,7 @@ export const createChatsRepo = (db: Sqlite): ChatsRepo => {
     "UPDATE chats SET eve_continuation_token = ?, updated_at = ? WHERE id = ?",
   );
   const setTitleStmt = db.prepare("UPDATE chats SET title = ?, updated_at = ? WHERE id = ?");
+  const deleteChatStmt = db.prepare("DELETE FROM chats WHERE id = ?");
   const touchChat = db.prepare("UPDATE chats SET updated_at = ? WHERE id = ?");
 
   const insertMessage = db.prepare(
@@ -164,6 +167,10 @@ export const createChatsRepo = (db: Sqlite): ChatsRepo => {
     setTitleStmt.run(title, nowIso(), id);
   };
 
+  const deleteChat = (id: ChatId): void => {
+    deleteChatStmt.run(id);
+  };
+
   const messages: MessagesRepo = {
     append: (chatId: ChatId, role: ChatRole, content: string): Message => {
       const id = newId("MessageId");
@@ -203,5 +210,16 @@ export const createChatsRepo = (db: Sqlite): ChatsRepo => {
     listRunning: (): ChatId[] => listRunningTurns.all().map((row) => asId("ChatId", row.chat_id)),
   };
 
-  return { create, get, list, listByUser, setContinuationToken, setTitle, messages, events, turns };
+  return {
+    create,
+    get,
+    list,
+    listByUser,
+    setContinuationToken,
+    setTitle,
+    delete: deleteChat,
+    messages,
+    events,
+    turns,
+  };
 };
