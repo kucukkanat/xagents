@@ -1,0 +1,14 @@
+{
+  "name": "@xagents/microsandbox-image",
+  "version": "0.0.0",
+  "type": "module",
+  "bin": {
+    "microsandbox-image": "./src/bin.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "microsandbox": "^0.6.6"
+  }
+}

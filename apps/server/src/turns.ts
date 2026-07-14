@@ -11,10 +11,21 @@ interface Turn {
   done: boolean;
   /** Resolvers woken on every new event and on completion. */
   readonly waiters: Set<() => void>;
+  /** Aborted by `cancel` to stop a running turn on user request ("stop generating"). */
+  readonly controller: AbortController;
 }
 
 /** How long a finished turn lingers so a late/reconnecting subscriber still sees its tail. */
 const LINGER_MS = 30_000;
+
+/** Distinguishes an abort from a real iterator result in the consume race. */
+const ABORTED = Symbol("aborted");
+
+const whenAborted = (signal: AbortSignal): Promise<typeof ABORTED> =>
+  new Promise((resolve) => {
+    if (signal.aborted) resolve(ABORTED);
+    else signal.addEventListener("abort", () => resolve(ABORTED), { once: true });
+  });
 
 /**
  * Owns at most one active turn per chat, decoupled from any HTTP request. The
@@ -37,7 +48,12 @@ export class ChatTurns {
    */
   start(chatId: string, produce: () => AsyncGenerator<ChatStreamEvent>): boolean {
     if (this.isActive(chatId)) return false;
-    const turn: Turn = { buffer: [], done: false, waiters: new Set() };
+    const turn: Turn = {
+      buffer: [],
+      done: false,
+      waiters: new Set(),
+      controller: new AbortController(),
+    };
     this.#turns.set(chatId, turn);
 
     const notify = (): void => {
@@ -46,9 +62,25 @@ export class ChatTurns {
     };
 
     void (async () => {
+      const iterator = produce();
+      const aborted = whenAborted(turn.controller.signal);
       try {
-        for await (const ev of produce()) {
-          turn.buffer.push(ev);
+        for (;;) {
+          // Race the next event against a cancel; a cancel wins even mid-await so
+          // "stop generating" is responsive regardless of how slow the model is.
+          const next = await Promise.race([iterator.next(), aborted]);
+          if (next === ABORTED) {
+            turn.buffer.push({ type: "error", message: "Generation stopped." });
+            notify();
+            // Ask the producer to unwind (close the eve stream, run its finally),
+            // but don't await it: a generator suspended on a slow/never-settling
+            // await only completes its return once that await does, and cancel
+            // must not block on that. Best-effort cleanup, rejection ignored.
+            void Promise.resolve(iterator.return?.(undefined)).catch(() => {});
+            break;
+          }
+          if (next.done) break;
+          turn.buffer.push(next.value);
           notify();
         }
       } catch (cause) {
@@ -66,6 +98,18 @@ export class ChatTurns {
       }
     })();
 
+    return true;
+  }
+
+  /**
+   * Stop the running turn for a chat ("stop generating"). Returns false if no
+   * turn is active. The producer is unwound and the buffered timeline gains a
+   * final interruption event; the caller persists the terminal state.
+   */
+  cancel(chatId: string): boolean {
+    const turn = this.#turns.get(chatId);
+    if (turn === undefined || turn.done) return false;
+    turn.controller.abort();
     return true;
   }
 

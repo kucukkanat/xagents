@@ -200,4 +200,10 @@ export const CreateChatInput = z.object({
 });
 export type CreateChatInput = z.infer<typeof CreateChatInput>;
 
+/** Rename a conversation from the chat header / history row. */
+export const UpdateChatInput = z.object({
+  title: z.string().min(1).max(120),
+});
+export type UpdateChatInput = z.infer<typeof UpdateChatInput>;
+
 export { slug as slugSchema };

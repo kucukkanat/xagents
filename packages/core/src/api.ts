@@ -38,6 +38,8 @@ export interface KnowledgebaseDetail {
 
 export interface ChatWithMessages {
   readonly chat: Chat;
+  /** Display name of the agent this chat belongs to — powers the chat header identity. */
+  readonly agentName: string;
   readonly messages: readonly Message[];
   /**
    * Events of a turn that hasn't produced a final assistant message yet — a

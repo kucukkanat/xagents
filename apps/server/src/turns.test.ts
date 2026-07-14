@@ -108,4 +108,29 @@ describe("ChatTurns", () => {
     const turns = new ChatTurns();
     expect(await collect(turns.subscribe("nope"))).toEqual([]);
   });
+
+  test("cancel stops a running turn with a terminal interruption event", async () => {
+    const turns = new ChatTurns();
+    const g = gate();
+    let reachedAfterGate = false;
+    async function* produce(): AsyncGenerator<ChatStreamEvent> {
+      yield { type: "text_delta", text: "partial" };
+      await g.wait; // never opened — cancel must interrupt the await
+      reachedAfterGate = true;
+      yield { type: "turn_completed", messageId: "m", text: "partial", continuationToken: "t" };
+    }
+    turns.start("c1", produce);
+    await new Promise((r) => setTimeout(r, 10)); // let "partial" buffer
+
+    expect(turns.cancel("c1")).toBe(true);
+    const got = await collect(turns.subscribe("c1"));
+    expect(got.at(-1)).toEqual({ type: "error", message: "Generation stopped." });
+    expect(turns.isActive("c1")).toBe(false);
+    expect(reachedAfterGate).toBe(false);
+  });
+
+  test("cancel is a no-op on a chat with no active turn", async () => {
+    const turns = new ChatTurns();
+    expect(turns.cancel("nope")).toBe(false);
+  });
 });

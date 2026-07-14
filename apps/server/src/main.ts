@@ -1,5 +1,5 @@
 import { serve } from "@hono/node-server";
-import { SANDBOX_DEFAULT_IMAGE, warmSandboxImage } from "@xagents/sandbox";
+import { SANDBOX_DEFAULT_IMAGE, ensureSandboxImage, warmSandboxImage } from "@xagents/sandbox";
 import { createApp } from "./app";
 import { createContext } from "./context";
 import { loadConfig, loadEnv } from "./env";
@@ -20,23 +20,39 @@ const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`  database:        ${config.databasePath}`);
 });
 
-// Pre-warm the (large) eve sandbox image so the first sandboxed chat isn't
-// blocked on a multi-minute first pull. Fire-and-forget; never blocks the server.
+// Ensure the custom sandbox image (the one that lets agents use `apt`) is built,
+// then pre-warm it so the first sandboxed chat isn't blocked on a first boot.
+// Fire-and-forget; never blocks the server. First run bakes the image (~1–2 min);
+// a chat that lands mid-bake will fail until it finishes — restart-free thereafter.
 if (config.sandboxBackend === "microsandbox") {
-  console.log(`  warming sandbox image ${SANDBOX_DEFAULT_IMAGE} in the background…`);
-  void warmSandboxImage().then((r) => {
-    console.log(r.ok ? "  ✓ sandbox image ready" : `  ⚠️  sandbox warm failed: ${r.error.message}`);
+  console.log(`  preparing sandbox image ${SANDBOX_DEFAULT_IMAGE} in the background…`);
+  void ensureSandboxImage({ log: (m) => console.log(`    ${m}`) }).then(async (r) => {
+    if (!r.ok) {
+      console.log(`  ⚠️  sandbox image build failed: ${r.error.message}`);
+      return;
+    }
+    if (r.value.built) console.log("  ✓ sandbox image built");
+    const warm = await warmSandboxImage();
+    console.log(warm.ok ? "  ✓ sandbox image ready" : `  ⚠️  sandbox warm failed: ${warm.error.message}`);
+  });
+  // A previous process's eve hosts orphan their microVMs when killed/crashed;
+  // reap those leftovers on boot so they don't accumulate (see reapOrphanSandboxes).
+  void ctx.supervisor.reapOrphanSandboxes().then((n) => {
+    if (n > 0) console.log(`  ✓ reaped ${n} orphaned sandbox microVM(s) from a prior run`);
   });
 }
 
-const shutdown = (): void => {
+const shutdown = async (): Promise<void> => {
   console.log("\n↓ shutting down…");
   ctx.supervisor.stopAll();
+  // Kill this process's microVMs too — killing their eve hosts doesn't (they run
+  // in their own process groups), so without this they'd outlive us as orphans.
+  await ctx.supervisor.reapOrphanSandboxes().catch(() => 0);
   ctx.db.close();
   server.close(() => process.exit(0));
   // Force-exit if something keeps the loop alive.
   setTimeout(() => process.exit(0), 3_000).unref();
 };
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());
