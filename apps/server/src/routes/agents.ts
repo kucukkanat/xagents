@@ -6,13 +6,33 @@ import {
   asId,
   findModel,
 } from "@xagents/core";
-import { type AppContext, invalidateAgent, materializeFromDb } from "../context";
+import {
+  type AppContext,
+  exportAgent,
+  importAgentArchive,
+  invalidateAgent,
+  materializeFromDb,
+} from "../context";
 import { parseBody, readJson, sendError } from "../http";
 
 export const agentRoutes = (ctx: AppContext): Hono => {
   const app = new Hono();
 
   app.get("/", (c) => c.json(ctx.db.agents.list(ctx.user.id)));
+
+  // Import an agent from an xagents export or a plain eve-project zip. Returns a
+  // full ImportReport (log trail + summary) even on validation failure. Pass
+  // `?dryRun=true` to validate and preview without writing anything.
+  app.post("/import", async (c) => {
+    const form = await c.req.formData();
+    const file = form.get("file");
+    if (!(file instanceof File)) {
+      return sendError(c, appError("validation", "expected a `file` upload (the exported .zip)"));
+    }
+    const dryRun = c.req.query("dryRun") === "true";
+    const report = await importAgentArchive(ctx, Buffer.from(await file.arrayBuffer()), { dryRun });
+    return c.json(report, report.ok ? (report.committed ? 201 : 200) : 422);
+  });
 
   app.post("/", async (c) => {
     const body = parseBody(CreateAgentInput, await readJson(c));
@@ -66,6 +86,18 @@ export const agentRoutes = (ctx: AppContext): Hono => {
     }
     const cloned = ctx.db.agents.clone(asId("AgentId", c.req.param("id")), ctx.user.id);
     return cloned.ok ? c.json(cloned.value, 201) : sendError(c, cloned.error);
+  });
+
+  // Download the agent's materialized eve project as a zip archive.
+  app.get("/:id/export", async (c) => {
+    const res = await exportAgent(ctx, c.req.param("id"));
+    if (!res.ok) return sendError(c, res.error);
+    return new Response(res.value.data, {
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="${res.value.filename}"`,
+      },
+    });
   });
 
   // Rebuild the on-disk eve project without chatting (useful for debugging).

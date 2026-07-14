@@ -44,6 +44,33 @@ export const chunkText = (input: string, options: ChunkOptions = {}): Chunk[] =>
   return chunks.map((text, ord) => ({ ord, text }));
 };
 
+/**
+ * Reassemble ordered chunk texts back into a single document, removing the
+ * overlap {@link chunkText} carries across boundaries. For each successive
+ * chunk we drop the longest prefix that already appears as a suffix of the
+ * text so far, so overlapping passages aren't duplicated. This is a faithful
+ * text reconstruction — not necessarily byte-identical to the original file,
+ * since chunking normalizes whitespace first.
+ */
+export const stitchChunks = (chunks: readonly string[]): string => {
+  let out = "";
+  for (const chunk of chunks) {
+    if (out.length === 0) {
+      out = chunk;
+      continue;
+    }
+    let overlap = 0;
+    for (let n = Math.min(out.length, chunk.length); n > 0; n--) {
+      if (out.endsWith(chunk.slice(0, n))) {
+        overlap = n;
+        break;
+      }
+    }
+    out += chunk.slice(overlap);
+  }
+  return out;
+};
+
 /** Hard-split a single paragraph longer than maxChars into char windows. */
 const splitOversized = (paragraph: string, maxChars: number): string[] => {
   if (paragraph.length <= maxChars) return [paragraph];

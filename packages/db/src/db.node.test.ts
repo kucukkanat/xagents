@@ -228,4 +228,56 @@ describe("chats", () => {
     }
     expect(db.chats.list(agent.id)).toHaveLength(1);
   });
+
+  test("turns tracks durable status across start/complete/fail, isolated per chat", () => {
+    const owner = db.users.getCurrent();
+    const agent = db.agents.create(owner.id, agentInput());
+    const chatA = db.chats.create(agent.id, owner.id, "Chat A");
+    const chatB = db.chats.create(agent.id, owner.id, "Chat B");
+
+    expect(db.chats.turns.listRunning()).toEqual([]);
+
+    db.chats.turns.start(chatA.id);
+    db.chats.turns.start(chatB.id);
+    expect(new Set(db.chats.turns.listRunning())).toEqual(new Set([chatA.id, chatB.id]));
+
+    db.chats.turns.complete(chatA.id);
+    expect(db.chats.turns.listRunning()).toEqual([chatB.id]);
+
+    db.chats.turns.fail(chatB.id, "boom");
+    expect(db.chats.turns.listRunning()).toEqual([]);
+
+    // Starting again after completion/failure re-marks the chat as running
+    // (the row is upserted, not duplicated).
+    db.chats.turns.start(chatA.id);
+    expect(db.chats.turns.listRunning()).toEqual([chatA.id]);
+  });
+
+  test("listByUser returns history summaries newest-first, filterable by agent", () => {
+    const owner = db.users.getCurrent();
+    const agentA = db.agents.create(owner.id, agentInput());
+    const agentB = db.agents.create(owner.id, agentInput());
+
+    const chatA = db.chats.create(agentA.id, owner.id, "About A");
+    db.chats.messages.append(chatA.id, "user", "first question");
+    db.chats.messages.append(chatA.id, "assistant", "the latest answer");
+    // A newer chat on the other agent so ordering is observable.
+    const chatB = db.chats.create(agentB.id, owner.id, "Empty chat");
+
+    const all = db.chats.listByUser(owner.id);
+    expect(all.map((s) => s.chat.id)).toEqual([chatB.id, chatA.id]);
+
+    const [, summaryA] = all;
+    expect(summaryA?.agentName).toBe(agentA.name);
+    expect(summaryA?.messageCount).toBe(2);
+    expect(summaryA?.lastMessagePreview).toBe("the latest answer");
+
+    // Empty chat carries a null preview and zero count.
+    expect(all[0]?.messageCount).toBe(0);
+    expect(all[0]?.lastMessagePreview).toBeNull();
+
+    // The optional agent filter narrows to one agent's chats.
+    const onlyA = db.chats.listByUser(owner.id, agentA.id);
+    expect(onlyA.map((s) => s.chat.id)).toEqual([chatA.id]);
+  });
 });

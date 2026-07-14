@@ -7,6 +7,7 @@ import type {
   Message,
   Skill,
 } from "./entities";
+import type { ChatStreamEvent } from "./events";
 import type { ModelOption } from "./providers";
 
 /** Uniform JSON error body returned by the API. */
@@ -38,6 +39,22 @@ export interface KnowledgebaseDetail {
 export interface ChatWithMessages {
   readonly chat: Chat;
   readonly messages: readonly Message[];
+  /**
+   * Events of a turn that hasn't produced a final assistant message yet — a
+   * turn running right now, or one interrupted by a crash/restart. Lets a fresh
+   * page load reconstruct the in-progress assistant bubble instead of a blank.
+   */
+  readonly pending: readonly ChatStreamEvent[];
+  /** True when a turn is actively running for this chat on the server. */
+  readonly streaming: boolean;
+}
+
+/** A chat enriched for history lists: the agent it belongs to plus a preview. */
+export interface ChatSummary {
+  readonly chat: Chat;
+  readonly agentName: string;
+  readonly messageCount: number;
+  readonly lastMessagePreview: string | null;
 }
 
 /** Response of `GET /api/config` — drives the model picker etc. */

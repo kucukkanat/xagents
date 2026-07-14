@@ -2,11 +2,13 @@ import { useState } from "react";
 import {
   BookOpenIcon,
   BotIcon,
+  DownloadIcon,
   MessageSquareIcon,
   PencilIcon,
   SparklesIcon,
 } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { ConversationList } from "@/components/conversation-list";
 import { EmptyState } from "@/components/empty-state";
 import { Markdown } from "@/components/markdown";
 import { PageHeader } from "@/components/page-header";
@@ -15,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { errorMessage, useAsync } from "@/hooks/use-async";
-import { createChat, getAgent } from "@/lib/api";
+import { createChat, exportAgent, getAgent, listChats } from "@/lib/api";
 import { toast } from "sonner";
 
 export function AgentDetailPage() {
@@ -25,7 +27,9 @@ export function AgentDetailPage() {
     () => getAgent(id ?? ""),
     [id],
   );
+  const { data: chats } = useAsync(() => listChats(id ?? ""), [id]);
   const [busy, setBusy] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const onNewChat = async () => {
     if (!id) return;
@@ -36,6 +40,18 @@ export function AgentDetailPage() {
     } catch (e) {
       toast.error(errorMessage(e));
       setBusy(false);
+    }
+  };
+
+  const onExport = async () => {
+    if (!id) return;
+    setExporting(true);
+    try {
+      await exportAgent(id);
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -68,6 +84,9 @@ export function AgentDetailPage() {
               <Link to={`/agents/${agent.id}/edit`}>
                 <PencilIcon /> Edit
               </Link>
+            </Button>
+            <Button variant="outline" onClick={onExport} disabled={exporting}>
+              <DownloadIcon /> {exporting ? "Exporting…" : "Export"}
             </Button>
             <Button onClick={onNewChat} disabled={busy}>
               <MessageSquareIcon /> New chat
@@ -107,6 +126,19 @@ export function AgentDetailPage() {
           />
         </div>
       </div>
+
+      {chats && chats.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <MessageSquareIcon className="size-4" /> Recent conversations
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ConversationList chats={chats} showAgent={false} />
+          </CardContent>
+        </Card>
+      ) : null}
     </>
   );
 }

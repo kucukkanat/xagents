@@ -5,7 +5,7 @@ import { type RawDocument, extractText } from "./extract";
 export type { RawDocument } from "./extract";
 export type { Chunk, ChunkOptions } from "./chunk";
 export { extractText } from "./extract";
-export { chunkText } from "./chunk";
+export { chunkText, stitchChunks } from "./chunk";
 
 export interface IngestedDocument {
   readonly text: string;

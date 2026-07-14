@@ -4,3 +4,4 @@ export * from "./providers";
 export * from "./entities";
 export * from "./events";
 export * from "./api";
+export * from "./transfer";

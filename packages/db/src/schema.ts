@@ -146,6 +146,19 @@ CREATE TABLE IF NOT EXISTS events (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_chat ON events(chat_id);
+
+-- Durable record of turn progress, independent of the in-process turn hub
+-- (apps/server/src/turns.ts). Written before a turn's background work starts
+-- and finalized when it ends, so a process that starts up mid-turn (after a
+-- crash or restart of the *previous* process) can tell "running" apart from
+-- "already finished" and reconcile anything left dangling.
+CREATE TABLE IF NOT EXISTS turns (
+  chat_id       TEXT PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+  status        TEXT NOT NULL,
+  error_message TEXT,
+  started_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
 `;
 
 /**

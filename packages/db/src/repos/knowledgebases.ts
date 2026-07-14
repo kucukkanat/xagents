@@ -45,6 +45,8 @@ export interface KnowledgebasesRepo {
   readonly clone: (sourceId: KnowledgebaseId, newOwnerId: UserId) => Result<Knowledgebase, AppError>;
   readonly addDocument: (kbId: KnowledgebaseId, doc: NewDocument) => KbDocument;
   readonly listDocuments: (kbId: KnowledgebaseId) => KbDocument[];
+  /** A document's chunk texts in `ord` order (raw; stitch to reconstruct). */
+  readonly documentChunks: (docId: KbDocumentId) => string[];
   readonly removeDocument: (docId: KbDocumentId) => void;
   readonly insertChunks: (
     kbId: KnowledgebaseId,
@@ -162,6 +164,9 @@ export const createKnowledgebasesRepo = (db: Sqlite): KnowledgebasesRepo => {
   const listDocuments = (kbId: KnowledgebaseId): KbDocument[] =>
     docByKb.all(kbId).map(mapKbDocumentRow);
 
+  const documentChunks = (docId: KbDocumentId): string[] =>
+    rawChunksByDoc.all(docId).map((c) => c.text);
+
   const removeDocument = (docId: KbDocumentId): void => {
     db.transaction(() => {
       deleteDocFts.run(docId);
@@ -245,6 +250,7 @@ export const createKnowledgebasesRepo = (db: Sqlite): KnowledgebasesRepo => {
     clone,
     addDocument,
     listDocuments,
+    documentChunks,
     removeDocument,
     insertChunks,
     searchChunks,

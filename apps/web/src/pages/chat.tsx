@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeftIcon,
   BrainIcon,
@@ -9,14 +9,14 @@ import {
   WrenchIcon,
 } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
-import type { ChatRole, KbSearchHit } from "@xagents/core";
+import type { ChatRole, ChatStreamEvent, KbSearchHit } from "@xagents/core";
 import { Markdown } from "@/components/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { errorMessage } from "@/hooks/use-async";
-import { getChat, streamChatMessage } from "@/lib/api";
+import { getChat, sendMessage, streamChat } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -29,6 +29,8 @@ interface ToolStep {
   sandbox?: boolean;
 }
 
+type TurnStatus = "preparing" | "thinking" | undefined;
+
 interface Bubble {
   readonly id: string;
   readonly role: ChatRole;
@@ -36,6 +38,8 @@ interface Bubble {
   reasoning: string;
   tools: ToolStep[];
   citations: KbSearchHit[];
+  /** Lifecycle hint for the in-progress assistant bubble (cold start, etc.). */
+  status: TurnStatus;
 }
 
 const newBubble = (id: string, role: ChatRole, text = ""): Bubble => ({
@@ -45,7 +49,41 @@ const newBubble = (id: string, role: ChatRole, text = ""): Bubble => ({
   reasoning: "",
   tools: [],
   citations: [],
+  status: undefined,
 });
+
+/** Fold one stream event into a bubble. Shared by live streaming and by
+ *  reconstructing an interrupted turn from its persisted events on reload. */
+const applyEvent = (b: Bubble, ev: ChatStreamEvent): Bubble => {
+  switch (ev.type) {
+    case "status":
+      return { ...b, status: ev.state };
+    case "text_delta":
+      return { ...b, status: undefined, text: b.text + ev.text };
+    case "reasoning_delta":
+      return { ...b, reasoning: b.reasoning + ev.text };
+    case "tool_call":
+      return {
+        ...b,
+        status: undefined,
+        tools: [...b.tools, { callId: ev.callId, toolName: ev.toolName, args: ev.args }],
+      };
+    case "tool_result":
+      return {
+        ...b,
+        tools: b.tools.map((t) =>
+          t.callId === ev.callId ? { ...t, result: ev.result, ok: ev.ok, sandbox: ev.sandbox } : t,
+        ),
+      };
+    case "kb_citations":
+      return { ...b, citations: [...ev.hits] };
+    case "turn_completed":
+      return { ...b, status: undefined, text: ev.text || b.text };
+    case "turn_started":
+    case "error":
+      return b;
+  }
+};
 
 export function ChatPage() {
   const { chatId = "" } = useParams();
@@ -56,16 +94,53 @@ export function ChatPage() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  // One live stream at a time; aborted when the chat changes or unmounts.
+  const abortRef = useRef<AbortController | undefined>(undefined);
+
+  /** Tail the server's live turn into the assistant bubble `assistantId`. */
+  const attach = useCallback(
+    async (assistantId: string) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const patch = (fn: (b: Bubble) => Bubble) =>
+        setBubbles((prev) => prev.map((b) => (b.id === assistantId ? fn(b) : b)));
+      setStreaming(true);
+      try {
+        for await (const ev of streamChat(chatId, controller.signal)) {
+          if (ev.type === "error") toast.error(ev.message);
+          else patch((b) => applyEvent(b, ev));
+        }
+      } catch (e) {
+        // An abort (chat switch/unmount) is expected; surface only real failures.
+        if (!controller.signal.aborted) toast.error(errorMessage(e));
+      } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = undefined;
+          setStreaming(false);
+        }
+      }
+    },
+    [chatId],
+  );
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setLoadError(undefined);
+    setBubbles([]);
+    setStreaming(false);
     getChat(chatId)
-      .then(({ chat, messages }) => {
+      .then(({ chat, messages, pending, streaming: isStreaming }) => {
         if (!active) return;
         setTitle(chat.title || "Chat");
-        setBubbles(messages.map((m) => newBubble(m.id, m.role, m.content)));
+        const base = messages.map((m) => newBubble(m.id, m.role, m.content));
+        // Reconstruct an in-progress/interrupted assistant turn, if any.
+        const hasLiveTurn = isStreaming || pending.length > 0;
+        const liveId = `live-${chat.id}`;
+        const live = pending.reduce(applyEvent, newBubble(liveId, "assistant"));
+        setBubbles(hasLiveTurn ? [...base, live] : base);
+        if (isStreaming) void attach(liveId);
       })
       .catch((e: unknown) => {
         if (active) setLoadError(errorMessage(e));
@@ -75,8 +150,10 @@ export function ChatPage() {
       });
     return () => {
       active = false;
+      abortRef.current?.abort();
+      abortRef.current = undefined;
     };
-  }, [chatId]);
+  }, [chatId, attach]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -86,58 +163,18 @@ export function ChatPage() {
     const text = input.trim();
     if (!text || streaming) return;
     setInput("");
-    const assistantId = `a-${Date.now()}`;
+    const assistantId = `live-${Date.now()}`;
     setBubbles((prev) => [
       ...prev,
       newBubble(`u-${Date.now()}`, "user", text),
-      newBubble(assistantId, "assistant"),
+      { ...newBubble(assistantId, "assistant"), status: "preparing" },
     ]);
     setStreaming(true);
-
-    const patch = (fn: (b: Bubble) => Bubble) =>
-      setBubbles((prev) => prev.map((b) => (b.id === assistantId ? fn(b) : b)));
-
     try {
-      for await (const ev of streamChatMessage(chatId, { message: text })) {
-        switch (ev.type) {
-          case "text_delta":
-            patch((b) => ({ ...b, text: b.text + ev.text }));
-            break;
-          case "reasoning_delta":
-            patch((b) => ({ ...b, reasoning: b.reasoning + ev.text }));
-            break;
-          case "tool_call":
-            patch((b) => ({
-              ...b,
-              tools: [...b.tools, { callId: ev.callId, toolName: ev.toolName, args: ev.args }],
-            }));
-            break;
-          case "tool_result":
-            patch((b) => ({
-              ...b,
-              tools: b.tools.map((t) =>
-                t.callId === ev.callId
-                  ? { ...t, result: ev.result, ok: ev.ok, sandbox: ev.sandbox }
-                  : t,
-              ),
-            }));
-            break;
-          case "kb_citations":
-            patch((b) => ({ ...b, citations: [...ev.hits] }));
-            break;
-          case "turn_completed":
-            patch((b) => ({ ...b, text: ev.text || b.text }));
-            break;
-          case "error":
-            toast.error(ev.message);
-            break;
-          case "turn_started":
-            break;
-        }
-      }
+      await sendMessage(chatId, { message: text });
+      await attach(assistantId);
     } catch (e) {
       toast.error(errorMessage(e));
-    } finally {
       setStreaming(false);
     }
   };
@@ -170,7 +207,7 @@ export function ChatPage() {
           ) : (
             bubbles.map((b) => <BubbleView key={b.id} bubble={b} />)
           )}
-          {streaming ? <ThinkingDots /> : null}
+          {streaming && bubbles.at(-1)?.status === undefined ? <ThinkingDots /> : null}
           <div ref={bottomRef} />
         </div>
       </div>
@@ -229,8 +266,21 @@ function BubbleView({ bubble }: { bubble: Bubble }) {
             )}
           </div>
         ) : null}
+        {bubble.status ? <StatusLine status={bubble.status} /> : null}
         {bubble.citations.length > 0 ? <Citations hits={bubble.citations} /> : null}
       </div>
+    </div>
+  );
+}
+
+/** In-bubble indicator for what the background turn is doing before output arrives. */
+function StatusLine({ status }: { status: "preparing" | "thinking" }) {
+  const label = status === "preparing" ? "Starting the agent…" : "Thinking…";
+  return (
+    <div className="flex items-center gap-2 rounded-2xl bg-muted px-4 py-2.5 text-sm text-muted-foreground">
+      {status === "preparing" ? <ShieldCheckIcon className="size-4" /> : <BrainIcon className="size-4" />}
+      <span>{label}</span>
+      <ThinkingDots />
     </div>
   );
 }
