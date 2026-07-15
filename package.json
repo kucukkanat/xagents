@@ -29,7 +29,12 @@
     "@types/node": "^24.0.0"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.30",
+    "@ai-sdk/azure": "^2.0.45",
     "@ai-sdk/deepseek": "^1.0.0",
+    "@ai-sdk/google": "^2.0.20",
+    "@ai-sdk/google-vertex": "^3.0.30",
+    "@ai-sdk/openai-compatible": "^1.0.20",
     "ai": "^7.0.26",
     "eve": "^0.23.0",
     "just-bash": "^3.1.0",

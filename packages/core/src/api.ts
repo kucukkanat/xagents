@@ -40,6 +40,10 @@ export interface ChatWithMessages {
   readonly chat: Chat;
   /** Display name of the agent this chat belongs to — powers the chat header identity. */
   readonly agentName: string;
+  /** The agent's provider — the model switcher only offers this provider's models. */
+  readonly modelProvider: string;
+  /** The agent's configured model — the effective model when the chat has no override. */
+  readonly defaultModelId: string;
   readonly messages: readonly Message[];
   /**
    * Events of a turn that hasn't produced a final assistant message yet — a
@@ -64,6 +68,9 @@ export interface ClientConfig {
   readonly models: readonly ModelOption[];
   readonly currentUser: { readonly id: string; readonly handle: string; readonly displayName: string };
   readonly sandboxBackend: string;
+  /** Whether the super-admin console is enabled (an `ADMIN_TOKEN` is set). Never
+   *  carries the token itself — only whether to show the admin nav + gate. */
+  readonly adminAvailable: boolean;
 }
 
 /** Base path for all HTTP routes. */

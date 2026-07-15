@@ -229,6 +229,28 @@ describe("chats", () => {
     expect(db.chats.list(agent.id)).toHaveLength(1);
   });
 
+  test("model hot-swap: override + eve session mapping round-trip", () => {
+    const owner = db.users.getCurrent();
+    const agent = db.agents.create(owner.id, agentInput());
+    const chat = db.chats.create(agent.id, owner.id, "Chat");
+
+    // A fresh chat has no override and isn't mapped to any eve session yet.
+    const fresh = db.chats.get(chat.id);
+    expect(isOk(fresh) && fresh.value.overrideModelId).toBeNull();
+    expect(db.chats.getBySessionId("wrun_1")).toBeUndefined();
+
+    // Map the chat to its eve session, then look it up by that session id.
+    db.chats.setEveSessionId(chat.id, "wrun_1");
+    expect(db.chats.getBySessionId("wrun_1")?.id).toBe(chat.id);
+
+    // Set an override, then clear it back to the agent default (null).
+    db.chats.setOverrideModel(chat.id, "big-model");
+    expect(db.chats.getBySessionId("wrun_1")?.overrideModelId).toBe("big-model");
+    db.chats.setOverrideModel(chat.id, null);
+    const reread = db.chats.get(chat.id);
+    expect(isOk(reread) && reread.value.overrideModelId).toBeNull();
+  });
+
   test("turns tracks durable status across start/complete/fail, isolated per chat", () => {
     const owner = db.users.getCurrent();
     const agent = db.agents.create(owner.id, agentInput());

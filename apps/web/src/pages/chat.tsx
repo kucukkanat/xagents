@@ -3,7 +3,9 @@ import {
   ArrowLeftIcon,
   ArrowUpIcon,
   BrainIcon,
+  CheckIcon,
   ChevronDownIcon,
+  CpuIcon,
   Loader2Icon,
   MoreHorizontalIcon,
   RotateCwIcon,
@@ -16,7 +18,7 @@ import {
 } from "lucide-react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
-import type { ChatRole, ChatStreamEvent, KbSearchHit } from "@xagents/core";
+import type { ChatRole, ChatStreamEvent, KbSearchHit, ModelOption } from "@xagents/core";
 import { AgentAvatar, type AgentActivity } from "@/components/agent-avatar";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
@@ -42,8 +44,10 @@ import {
   renameChat,
   retryChat,
   sendMessage,
+  setChatModel,
   streamChat,
 } from "@/lib/api";
+import { useConfig } from "@/lib/config-context";
 import { cn } from "@/lib/utils";
 
 interface ToolStep {
@@ -135,9 +139,15 @@ export function ChatPage() {
   // never litters history with empty conversations.
   const isDraft = chatId === "new";
   const draftAgentId = searchParams.get("agent") ?? "";
+  const { models } = useConfig();
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [title, setTitle] = useState("Chat");
   const [agentName, setAgentName] = useState("Agent");
+  // Per-chat model hot-swap: the agent's provider + default model, and this
+  // chat's override (null = using the agent default).
+  const [modelProvider, setModelProvider] = useState("");
+  const [defaultModelId, setDefaultModelId] = useState("");
+  const [overrideModelId, setOverrideModelId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | undefined>(undefined);
   const [input, setInput] = useState("");
@@ -216,6 +226,15 @@ export function ChatPage() {
       draftHandoff.current = undefined;
       setLoading(false);
       void attach(chatId, handoff.assistantId);
+      // Enrich the header with model info without disturbing the live turn.
+      getChat(chatId)
+        .then(({ chat, modelProvider: provider, defaultModelId: dflt }) => {
+          if (!active) return;
+          setModelProvider(provider);
+          setDefaultModelId(dflt);
+          setOverrideModelId(chat.overrideModelId);
+        })
+        .catch(() => undefined);
       return () => {
         active = false;
         abortRef.current?.abort();
@@ -243,7 +262,13 @@ export function ChatPage() {
       }
       getAgent(draftAgentId)
         .then(({ agent }) => {
-          if (active) setAgentName(agent.name);
+          if (!active) return;
+          setAgentName(agent.name);
+          // Populate the model switcher for the draft; the pick is applied to the
+          // real chat row on first send (see sendText).
+          setModelProvider(agent.modelProvider);
+          setDefaultModelId(agent.modelId);
+          setOverrideModelId(null);
         })
         .catch((e: unknown) => {
           if (active) setLoadError(errorMessage(e));
@@ -257,10 +282,13 @@ export function ChatPage() {
     }
 
     getChat(chatId)
-      .then(({ chat, agentName: name, messages, pending, streaming: isStreaming }) => {
+      .then(({ chat, agentName: name, modelProvider: provider, defaultModelId: dflt, messages, pending, streaming: isStreaming }) => {
         if (!active) return;
         setTitle(chat.title || "Chat");
         setAgentName(name);
+        setModelProvider(provider);
+        setDefaultModelId(dflt);
+        setOverrideModelId(chat.overrideModelId);
         const base = messages.map((m) => newBubble(m.id, m.role, m.content));
         // Reconstruct an in-progress/interrupted assistant turn, if any.
         const hasLiveTurn = isStreaming || pending.length > 0;
@@ -343,6 +371,9 @@ export function ChatPage() {
         return;
       }
       try {
+        // Apply a model picked before the first message, so this very first turn
+        // uses it. Must land before sendMessage kicks off the turn.
+        if (overrideModelId !== null) await setChatModel(created.id, overrideModelId);
         await sendMessage(created.id, { message: text });
       } catch (e) {
         // The first send failed — remove the just-created empty row rather than
@@ -405,8 +436,30 @@ export function ChatPage() {
     navigate("/");
   };
 
+  /** Hot-swap the model for this chat. Optimistic; reverts on failure. Choosing
+   *  the agent default clears the override rather than pinning an equal value.
+   *  On a draft (no row yet) the pick is held locally and applied to the created
+   *  row on first send. */
+  const changeModel = async (modelId: string): Promise<void> => {
+    const next = modelId === defaultModelId ? null : modelId;
+    if (next === overrideModelId) return;
+    const prev = overrideModelId;
+    setOverrideModelId(next);
+    if (isDraft) return; // Persisted in sendText once the chat row exists.
+    try {
+      await setChatModel(chatId, next);
+      toast.success("Model switched — applies from your next message");
+    } catch (e) {
+      setOverrideModelId(prev);
+      toast.error(errorMessage(e));
+    }
+  };
+
   const activity: AgentActivity = streaming ? "streaming" : "idle";
   const lastId = bubbles.at(-1)?.id;
+  // Only this agent's provider's models are swap targets (same-provider only).
+  const providerModels = models.filter((m) => m.provider === modelProvider);
+  const activeModelId = overrideModelId ?? defaultModelId;
 
   return (
     <div className="flex h-full flex-col">
@@ -415,6 +468,9 @@ export function ChatPage() {
         agentName={agentName}
         activity={activity}
         canManage={!isDraft}
+        models={providerModels}
+        activeModelId={activeModelId}
+        onModelChange={(id) => void changeModel(id)}
         onBack={() => navigate(-1)}
         onRename={async (next) => {
           const trimmed = next.trim();
@@ -499,6 +555,9 @@ function ChatHeader({
   agentName,
   activity,
   canManage,
+  models,
+  activeModelId,
+  onModelChange,
   onBack,
   onRename,
   onDelete,
@@ -508,6 +567,10 @@ function ChatHeader({
   activity: AgentActivity;
   /** False for a draft chat that has no persisted row yet (no rename/delete). */
   canManage: boolean;
+  /** The agent-provider's models offered as swap targets. */
+  models: readonly ModelOption[];
+  activeModelId: string;
+  onModelChange: (modelId: string) => void;
   onBack: () => void;
   onRename: (next: string) => void;
   onDelete: () => Promise<void>;
@@ -554,6 +617,9 @@ function ChatHeader({
           </>
         )}
       </div>
+      {models.length > 1 ? (
+        <ModelSwitcher models={models} activeModelId={activeModelId} onChange={onModelChange} />
+      ) : null}
       {canManage ? (
         <>
           <DropdownMenu>
@@ -596,6 +662,51 @@ function ChatHeader({
         </>
       ) : null}
     </header>
+  );
+}
+
+/** Compact header control to hot-swap the chat's model among the agent's
+ *  provider's models. The change applies from the next message (the running eve
+ *  session resolves it live), so conversation history carries over. */
+function ModelSwitcher({
+  models,
+  activeModelId,
+  onChange,
+}: {
+  models: readonly ModelOption[];
+  activeModelId: string;
+  onChange: (modelId: string) => void;
+}) {
+  const active = models.find((m) => m.modelId === activeModelId);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="press inline-flex max-w-[9rem] gap-1.5 text-muted-foreground sm:max-w-[11rem]"
+          aria-label="Switch model"
+        >
+          <CpuIcon className="size-4 shrink-0 text-brand" />
+          <span className="truncate">{active?.label ?? activeModelId}</span>
+          <ChevronDownIcon className="size-3.5 shrink-0 opacity-60" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="max-h-80 w-60 overflow-y-auto">
+        {models.map((m) => (
+          <DropdownMenuItem
+            key={m.modelId}
+            onSelect={() => onChange(m.modelId)}
+            className="gap-2"
+          >
+            <CheckIcon
+              className={cn("size-4 shrink-0", m.modelId === activeModelId ? "opacity-100" : "opacity-0")}
+            />
+            <span className="truncate">{m.label}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

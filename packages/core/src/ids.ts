@@ -17,6 +17,10 @@ export type SkillResourceId = Branded<string, "SkillResourceId">;
 export type ChatId = Branded<string, "ChatId">;
 export type MessageId = Branded<string, "MessageId">;
 export type ChatEventId = Branded<string, "ChatEventId">;
+export type RunMetricId = Branded<string, "RunMetricId">;
+export type MetricSampleId = Branded<string, "MetricSampleId">;
+export type AdminEventId = Branded<string, "AdminEventId">;
+export type ProviderModelId = Branded<string, "ProviderModelId">;
 
 const PREFIXES = {
   UserId: "usr",
@@ -29,6 +33,10 @@ const PREFIXES = {
   ChatId: "cht",
   MessageId: "msg",
   ChatEventId: "evt",
+  RunMetricId: "rmt",
+  MetricSampleId: "msp",
+  AdminEventId: "aev",
+  ProviderModelId: "pmd",
 } as const;
 
 type IdBrand = keyof typeof PREFIXES;

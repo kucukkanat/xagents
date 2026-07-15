@@ -7,8 +7,15 @@ import { loadConfig, loadEnv } from "./env";
 loadEnv();
 const config = loadConfig();
 
-if (config.deepseekApiKey === undefined) {
-  console.warn("⚠️  DEEPSEEK_API_KEY is not set — chat turns will fail until it is provided in .env");
+if (config.encryptionKey === undefined) {
+  console.warn(
+    "⚠️  SECRETS_KEY is not set — provider API keys can't be stored/used from the admin console.\n" +
+      "    Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\"",
+  );
+} else if (config.deepseekApiKey === undefined) {
+  console.warn(
+    "ℹ️  DEEPSEEK_API_KEY is not set — configure a provider key in the admin console (Providers tab).",
+  );
 }
 
 const ctx = createContext(config);
@@ -44,6 +51,7 @@ if (config.sandboxBackend === "microsandbox") {
 
 const shutdown = async (): Promise<void> => {
   console.log("\n↓ shutting down…");
+  ctx.adminHub.stop();
   ctx.supervisor.stopAll();
   // Kill this process's microVMs too — killing their eve hosts doesn't (they run
   // in their own process groups), so without this they'd outlive us as orphans.

@@ -99,6 +99,9 @@ export interface ChatRow {
   readonly user_id: string;
   readonly title: string;
   readonly eve_continuation_token: string | null;
+  readonly override_model_id: string | null;
+  /** eve session backing this chat; internal (not surfaced on the `Chat` type). */
+  readonly eve_session_id: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -221,6 +224,7 @@ export const mapChatRow = (row: ChatRow): Chat => ({
   userId: asId("UserId", row.user_id),
   title: row.title,
   eveContinuationToken: row.eve_continuation_token,
+  overrideModelId: row.override_model_id,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });

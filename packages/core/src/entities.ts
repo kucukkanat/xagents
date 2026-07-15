@@ -10,7 +10,7 @@ import type {
   SkillResourceId,
   UserId,
 } from "./ids";
-import { ProviderIdSchema, ReasoningEffortSchema } from "./providers";
+import { ReasoningEffortSchema } from "./providers";
 
 /** Public gallery vs private to the owner. */
 export const VisibilitySchema = z.enum(["private", "public"]);
@@ -58,7 +58,9 @@ export const CreateAgentInput = z.object({
   name,
   description: z.string().max(500).default(""),
   instructionsMd: z.string().min(1),
-  modelProvider: ProviderIdSchema,
+  // Provider is validated against the live registry at the route layer (it is
+  // admin-managed now), so here it is just a non-empty slug.
+  modelProvider: z.string().min(1),
   modelId: z.string().min(1),
   reasoning: ReasoningEffortSchema.default("provider-default"),
   visibility: VisibilitySchema.default("private"),
@@ -177,6 +179,13 @@ export interface Chat {
   readonly title: string;
   /** eve resume handle for follow-up turns; null before the first turn. */
   readonly eveContinuationToken: string | null;
+  /**
+   * Per-chat model hot-swap: overrides the agent's default model for this
+   * conversation only (must belong to the agent's provider). null = use the
+   * agent's configured model. Takes effect from the next turn — the running eve
+   * session resolves it live, so history is preserved across the swap.
+   */
+  readonly overrideModelId: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -205,5 +214,12 @@ export const UpdateChatInput = z.object({
   title: z.string().min(1).max(120),
 });
 export type UpdateChatInput = z.infer<typeof UpdateChatInput>;
+
+/** Hot-swap the model for one chat. `null` reverts to the agent's default. The
+ *  route validates the model belongs to the agent's provider and is usable. */
+export const SetChatModelInput = z.object({
+  modelId: z.string().min(1).nullable(),
+});
+export type SetChatModelInput = z.infer<typeof SetChatModelInput>;
 
 export { slug as slugSchema };

@@ -7,6 +7,7 @@ const FALLBACK: ClientConfig = {
   models: [],
   currentUser: { id: "", handle: "you", displayName: "You" },
   sandboxBackend: "unknown",
+  adminAvailable: false,
 };
 
 const ConfigContext = createContext<ClientConfig>(FALLBACK);

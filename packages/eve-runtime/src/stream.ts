@@ -1,9 +1,11 @@
-import type { ChatStreamEvent, KbSearchHit } from "@xagents/core";
+import type { ChatStreamEvent, KbSearchHit, TokenUsage } from "@xagents/core";
 
 /** Raw eve NDJSON frame: `{ type, data, meta }`. */
 export interface EveRawEvent {
   readonly type: string;
   readonly data: Record<string, unknown>;
+  /** eve's per-frame metadata; token usage tends to ride here on terminal frames. */
+  readonly meta?: Record<string, unknown>;
 }
 
 /** eve's built-in sandbox tools — their work runs inside the microVM. */
@@ -41,7 +43,11 @@ const parseFrame = (line: string): EveRawEvent | undefined => {
   try {
     const obj = JSON.parse(trimmed) as Record<string, unknown>;
     if (typeof obj.type !== "string") return undefined;
-    return { type: obj.type, data: isRecord(obj.data) ? obj.data : {} };
+    return {
+      type: obj.type,
+      data: isRecord(obj.data) ? obj.data : {},
+      ...(isRecord(obj.meta) ? { meta: obj.meta } : {}),
+    };
   } catch {
     return undefined;
   }
@@ -108,6 +114,38 @@ export const mapEveEvent = (ev: EveRawEvent): ChatStreamEvent[] => {
  */
 export const isTurnTerminal = (ev: EveRawEvent): boolean =>
   ev.type === "session.waiting" || ev.type === "session.completed";
+
+const num = (v: unknown): number | undefined =>
+  typeof v === "number" && Number.isFinite(v) ? v : undefined;
+
+/** Read a usage object under any of eve's/AI-SDK's common key spellings. */
+const readUsage = (src: unknown): TokenUsage | undefined => {
+  if (!isRecord(src)) return undefined;
+  const prompt =
+    num(src.promptTokens) ?? num(src.inputTokens) ?? num(src.prompt_tokens) ?? num(src.input_tokens);
+  const completion =
+    num(src.completionTokens) ??
+    num(src.outputTokens) ??
+    num(src.completion_tokens) ??
+    num(src.output_tokens);
+  if (prompt === undefined && completion === undefined) return undefined;
+  const promptTokens = prompt ?? 0;
+  const completionTokens = completion ?? 0;
+  const totalTokens = num(src.totalTokens) ?? num(src.total_tokens) ?? promptTokens + completionTokens;
+  return { promptTokens, completionTokens, totalTokens };
+};
+
+/**
+ * Best-effort token usage from an eve frame. eve doesn't guarantee usage, and
+ * where it lands (`data.usage`, `meta.usage`, or inline) varies by version, so
+ * we probe the likely spots and return `undefined` when nothing is present —
+ * the platform then records the run without token/cost (graceful degradation).
+ */
+export const extractUsage = (ev: EveRawEvent): TokenUsage | undefined =>
+  readUsage(ev.data.usage) ??
+  readUsage(ev.meta?.usage) ??
+  readUsage(ev.data) ??
+  readUsage(ev.meta);
 
 interface Action {
   readonly callId: string;

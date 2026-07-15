@@ -1,7 +1,7 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { type AppError, type Result, appError, err, ok } from "@xagents/core";
-import type { AgentHost } from "./types";
+import type { AgentHost, HostStatus, HostStopReason, SupervisorEvent } from "./types";
 
 const require = createRequire(import.meta.url);
 /** Absolute path to the installed eve CLI entrypoint. */
@@ -14,18 +14,28 @@ const isLoopback = (u: string): boolean => /127\.0\.0\.1|localhost|\[::1\]/.test
 interface Running {
   readonly host: AgentHost;
   readonly proc: ChildProcess;
+  readonly startedAt: number;
   lastUsed: number;
 }
 
 export interface SupervisorOptions {
   /** Where each agent's materialized eve project lives. */
   readonly projectDirFor: (agentId: string) => string;
-  /** Extra env for the eve child (e.g. DEEPSEEK_API_KEY). Merged over process.env. */
+  /** Extra env for every eve child. Merged over process.env. */
   readonly env?: Record<string, string | undefined>;
+  /**
+   * Per-agent env resolved at spawn time — the provider secret(s) that agent's
+   * model needs, decrypted just-in-time by the server. Layered over `env`, so a
+   * host only ever receives the one provider key it uses. Re-resolved on every
+   * (re)start, so rotating a key + restarting the host picks up the new value.
+   */
+  readonly envFor?: (agentId: string) => Record<string, string | undefined>;
   /** Kill a host after this long without use. Default 10 min. */
   readonly idleMs?: number;
   /** How long to wait for `eve dev` to print its origin. Default 180s. */
   readonly bootTimeoutMs?: number;
+  /** Optional monitoring hook. Called on every host/sandbox lifecycle change. */
+  readonly onEvent?: (event: SupervisorEvent) => void;
 }
 
 /**
@@ -36,6 +46,7 @@ export interface SupervisorOptions {
 export class HostSupervisor {
   readonly #projectDirFor: (agentId: string) => string;
   readonly #env: Record<string, string | undefined> | undefined;
+  readonly #envFor: ((agentId: string) => Record<string, string | undefined>) | undefined;
   readonly #idleMs: number;
   readonly #bootTimeoutMs: number;
   readonly #running = new Map<string, Running>();
@@ -44,17 +55,60 @@ export class HostSupervisor {
    *  microsandbox VM whose parent isn't in here is an orphan we should reap. */
   readonly #hostPids = new Set<number>();
   readonly #sweeper: NodeJS.Timeout;
+  readonly #onEvent: ((event: SupervisorEvent) => void) | undefined;
 
   constructor(opts: SupervisorOptions) {
     this.#projectDirFor = opts.projectDirFor;
     this.#env = opts.env;
+    this.#envFor = opts.envFor;
     this.#idleMs = opts.idleMs ?? 10 * 60_000;
     this.#bootTimeoutMs = opts.bootTimeoutMs ?? 180_000;
+    this.#onEvent = opts.onEvent;
     this.#sweeper = setInterval(() => {
       this.#reapIdle();
       void this.reapOrphanSandboxes();
     }, 30_000);
     this.#sweeper.unref();
+  }
+
+  /** Emit a lifecycle event to the monitoring hook, if one is wired. Never throws. */
+  #emit(event: SupervisorEvent): void {
+    try {
+      this.#onEvent?.(event);
+    } catch {
+      // A misbehaving observer must never affect host supervision.
+    }
+  }
+
+  /** Snapshot of the currently-running hosts, for the monitoring layer. */
+  list(): HostStatus[] {
+    const now = Date.now();
+    const out: HostStatus[] = [];
+    for (const [agentId, r] of this.#running) {
+      out.push({
+        agentId,
+        origin: r.host.origin,
+        pid: r.proc.pid ?? null,
+        startedAt: r.startedAt,
+        lastUsed: r.lastUsed,
+        uptimeMs: now - r.startedAt,
+      });
+    }
+    return out;
+  }
+
+  /** Agent ids currently cold-starting (spawned, not yet serving). */
+  startingIds(): string[] {
+    return [...this.#starting.keys()];
+  }
+
+  /** Live and orphaned `eve-sbx-*` microVM counts from a single `ps` snapshot. */
+  async sandboxStats(): Promise<{ readonly vms: number; readonly orphans: number }> {
+    const snapshot = await psSnapshot();
+    return {
+      vms: countSandboxPids(snapshot),
+      orphans: selectOrphanSandboxPids(snapshot, this.#hostPids).length,
+    };
   }
 
   /** Reuse a healthy host or start one. Concurrent calls for the same agent share one start. */
@@ -78,14 +132,24 @@ export class HostSupervisor {
   }
 
   /** Stop an agent's host (call after the agent is edited so it re-materializes). */
-  stop(agentId: string): void {
+  stop(agentId: string, reason: HostStopReason = "invalidated"): void {
     const r = this.#running.get(agentId);
     if (r === undefined) return;
     this.#running.delete(agentId);
     if (r.proc.pid !== undefined) this.#hostPids.delete(r.proc.pid);
     killProc(r.proc);
+    this.#emit({ kind: "host_stopped", agentId, reason });
   }
 
+  /** Stop every running host but keep the sweeper alive — the admin "stop all"
+   *  control. Distinct from `stopAll`, which also tears the sweeper down. */
+  stopHosts(): number {
+    const ids = [...this.#running.keys()];
+    for (const agentId of ids) this.stop(agentId, "admin");
+    return ids.length;
+  }
+
+  /** Full teardown for process shutdown: kills hosts AND stops the sweeper. */
   stopAll(): void {
     clearInterval(this.#sweeper);
     for (const [, r] of this.#running) {
@@ -115,14 +179,16 @@ export class HostSupervisor {
         // Raced with the process exiting between the snapshot and the kill — fine.
       }
     }
+    if (reaped > 0) this.#emit({ kind: "sandbox_reaped", count: reaped });
     return reaped;
   }
 
   async #start(agentId: string): Promise<Result<AgentHost, AppError>> {
     const cwd = this.#projectDirFor(agentId);
+    const startedAt = Date.now();
     const proc = spawn(process.execPath, [eveBinPath(), "dev", "--no-ui", "--port", "0"], {
       cwd,
-      env: { ...process.env, ...this.#env },
+      env: { ...process.env, ...this.#env, ...this.#envFor?.(agentId) },
       stdio: ["ignore", "pipe", "pipe"],
     });
     // Record the pid from spawn (not only after a successful boot) so a host
@@ -132,24 +198,37 @@ export class HostSupervisor {
     proc.once("exit", () => {
       if (pid !== undefined) this.#hostPids.delete(pid);
       // Drop the record if this exact process dies so the next call restarts it.
+      // A record still pointing at this proc means it died on its own (crash) —
+      // `stop` deletes the record before killing, so it won't reach here.
       const cur = this.#running.get(agentId);
-      if (cur?.proc === proc) this.#running.delete(agentId);
+      if (cur?.proc === proc) {
+        this.#running.delete(agentId);
+        this.#emit({ kind: "host_crashed", agentId, pid: pid ?? null });
+      }
     });
 
     const origin = await waitForOrigin(proc, this.#bootTimeoutMs);
     if (!origin.ok) {
       killProc(proc);
+      this.#emit({ kind: "boot_failed", agentId, message: origin.error.message });
       return origin;
     }
     const host: AgentHost = { agentId, origin: origin.value };
-    this.#running.set(agentId, { host, proc, lastUsed: Date.now() });
+    this.#running.set(agentId, { host, proc, startedAt, lastUsed: Date.now() });
+    this.#emit({
+      kind: "host_started",
+      agentId,
+      pid: pid ?? null,
+      origin: origin.value,
+      bootMs: Date.now() - startedAt,
+    });
     return ok(host);
   }
 
   #reapIdle(): void {
     const cutoff = Date.now() - this.#idleMs;
     for (const [agentId, r] of this.#running) {
-      if (r.lastUsed < cutoff) this.stop(agentId);
+      if (r.lastUsed < cutoff) this.stop(agentId, "idle");
     }
   }
 }
@@ -222,6 +301,19 @@ export const selectOrphanSandboxPids = (
     pids.push(Number(pidStr));
   }
   return pids;
+};
+
+/** Count every live `eve-sbx-*` microVM in a `ps` snapshot. Pure, so the gauge
+ *  is unit-testable without touching real processes. */
+export const countSandboxPids = (psSnapshotText: string): number => {
+  let count = 0;
+  for (const line of psSnapshotText.split("\n")) {
+    const m = /^\s*\d+\s+\d+\s+(.*)$/.exec(line);
+    if (m === null) continue;
+    const command = m[1];
+    if (command !== undefined && SANDBOX_PROC_RE.test(command)) count += 1;
+  }
+  return count;
 };
 
 /** Every process as `<pid> <ppid> <command>` lines; empty string on failure. */

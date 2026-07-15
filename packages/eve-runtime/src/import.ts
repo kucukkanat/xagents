@@ -2,16 +2,12 @@ import {
   type ImportLogEntry,
   type ImportSeverity,
   type ImportSource,
-  type ProviderId,
+  type ModelResolver,
   type ReasoningEffort,
   type Visibility,
   AgentExportManifest,
-  DEFAULT_MODEL,
   EXPORT_MANIFEST_FILE,
-  MODEL_CATALOG,
-  ProviderIdSchema,
   ReasoningEffortSchema,
-  findModel,
 } from "@xagents/core";
 import { parseSkillMd } from "@xagents/skills";
 
@@ -48,7 +44,7 @@ export interface ImportPlanAgent {
   readonly name: string;
   readonly description: string;
   readonly instructionsMd: string;
-  readonly modelProvider: ProviderId;
+  readonly modelProvider: string;
   readonly modelId: string;
   readonly reasoning: ReasoningEffort;
   readonly visibility: Visibility;
@@ -80,35 +76,40 @@ const readText = (files: Files, path: string): string | undefined => files.get(p
 /** Imported entities always land private; the user can publish afterwards. */
 const IMPORTED_VISIBILITY: Visibility = "private";
 
-/** Resolve a (provider, modelId) pair against the catalog, logging any fixups. */
+/** Resolve a (provider, modelId) pair against the live registry, logging fixups. */
 const resolveModel = (
   provider: string,
   modelId: string,
   log: Log,
   step: string,
-): { readonly provider: ProviderId; readonly modelId: string } | null => {
-  const parsed = ProviderIdSchema.safeParse(provider);
-  if (!parsed.success) {
+  resolver: ModelResolver,
+): { readonly provider: string; readonly modelId: string } | null => {
+  if (!resolver.isKnownProvider(provider)) {
+    const known = resolver.knownProviders();
     log.push(
       entry(
         "error",
         step,
-        `Model provider ${JSON.stringify(provider)} is not supported. Supported providers: ${ProviderIdSchema.options.join(", ")}.`,
+        `Model provider ${JSON.stringify(provider)} is not supported. Enabled providers: ${known.length > 0 ? known.join(", ") : "(none configured)"}.`,
       ),
     );
     return null;
   }
-  if (findModel(parsed.data, modelId) !== undefined) return { provider: parsed.data, modelId };
+  if (resolver.hasModel(provider, modelId)) return { provider, modelId };
 
-  const fallback = MODEL_CATALOG.find((m) => m.provider === parsed.data) ?? DEFAULT_MODEL;
+  const fallback = resolver.fallbackFor(provider);
+  if (fallback === null) {
+    log.push(entry("error", step, `Provider ${JSON.stringify(provider)} has no enabled models to import into.`));
+    return null;
+  }
   log.push(
     entry(
       "warning",
       step,
-      `Model ${JSON.stringify(modelId)} is not in the catalog; substituting ${JSON.stringify(fallback.modelId)}.`,
+      `Model ${JSON.stringify(modelId)} is not available; substituting ${JSON.stringify(fallback.modelId)}.`,
     ),
   );
-  return { provider: fallback.provider, modelId: fallback.modelId };
+  return fallback;
 };
 
 const resolveReasoning = (raw: string | undefined, log: Log, step: string): ReasoningEffort => {
@@ -156,7 +157,7 @@ const buildSkill = (files: Files, skillDir: string, log: Log): ImportPlanSkill |
 };
 
 /** Parse an xagents export using its authoritative root manifest. */
-const parseXagents = (files: Files, log: Log): ImportPlan | null => {
+const parseXagents = (files: Files, log: Log, resolver: ModelResolver): ImportPlan | null => {
   const raw = readText(files, EXPORT_MANIFEST_FILE);
   if (raw === undefined) return null; // caller already checked; defensive.
 
@@ -185,7 +186,7 @@ const parseXagents = (files: Files, log: Log): ImportPlan | null => {
     log.push(entry("error", "agent", `Agent instructions not found at ${m.agent.instructionsPath}.`));
     return null;
   }
-  const model = resolveModel(m.agent.modelProvider, m.agent.modelId, log, "agent");
+  const model = resolveModel(m.agent.modelProvider, m.agent.modelId, log, "agent", resolver);
   if (model === null) return null;
   const reasoning = resolveReasoning(m.agent.reasoning, log, "agent");
   if (m.agent.visibility === "public") {
@@ -235,7 +236,7 @@ const MODEL_CALL_RE = /model\s*:\s*(\w+)\s*\(\s*["']([^"']+)["']/;
 const REASONING_RE = /reasoning\s*:\s*["']([\w-]+)["']/;
 
 /** Best-effort parse of a plain eve project developed outside xagents. */
-const parseEveProject = (files: Files, log: Log): ImportPlan | null => {
+const parseEveProject = (files: Files, log: Log, resolver: ModelResolver): ImportPlan | null => {
   const instructions = readText(files, "agent/instructions.md");
   if (instructions === undefined || instructions.trim().length === 0) {
     log.push(entry("error", "agent", "Missing or empty agent/instructions.md."));
@@ -254,7 +255,7 @@ const parseEveProject = (files: Files, log: Log): ImportPlan | null => {
     );
     return null;
   }
-  const model = resolveModel(modelMatch[1] ?? "", modelMatch[2] ?? "", log, "agent");
+  const model = resolveModel(modelMatch[1] ?? "", modelMatch[2] ?? "", log, "agent", resolver);
   if (model === null) return null;
   const reasoning = resolveReasoning(REASONING_RE.exec(agentTs)?.[1], log, "agent");
 
@@ -323,16 +324,16 @@ const parseEveProject = (files: Files, log: Log): ImportPlan | null => {
 };
 
 /** Detect the archive format and produce a validated plan + audit log. */
-export const parseAgentArchive = (files: Files): ParsedArchive => {
+export const parseAgentArchive = (files: Files, resolver: ModelResolver): ParsedArchive => {
   const log: Log = [];
 
   if (files.has(EXPORT_MANIFEST_FILE)) {
     log.push(entry("info", "detect", "Recognized an xagents export (found the manifest)."));
-    return { source: "xagents-export", plan: parseXagents(files, log), log };
+    return { source: "xagents-export", plan: parseXagents(files, log, resolver), log };
   }
   if (files.has("agent/instructions.md") || files.has("agent/agent.ts")) {
     log.push(entry("info", "detect", "No xagents manifest; treating as a plain eve project."));
-    return { source: "eve-project", plan: parseEveProject(files, log), log };
+    return { source: "eve-project", plan: parseEveProject(files, log, resolver), log };
   }
   log.push(
     entry(

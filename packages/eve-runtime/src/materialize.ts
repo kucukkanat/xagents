@@ -7,7 +7,7 @@ import {
   generateAgentModuleSource,
   generateKbSearchToolSource,
   generateProjectPackageJson,
-  isSupportedProvider,
+  isSupportedAdapterKind,
 } from "./codegen";
 import type { AgentMaterializationSpec } from "./types";
 
@@ -22,8 +22,8 @@ export const materializeAgent = async (
   projectDir: string,
 ): Promise<Result<{ readonly projectDir: string }, AppError>> => {
   const { agent } = spec;
-  if (!isSupportedProvider(agent.modelProvider)) {
-    return err(appError("validation", `unsupported model provider: ${agent.modelProvider}`));
+  if (!isSupportedAdapterKind(spec.provider.adapterKind)) {
+    return err(appError("validation", `unsupported provider adapter: ${spec.provider.adapterKind}`));
   }
 
   try {
@@ -36,9 +36,11 @@ export const materializeAgent = async (
     await writeFile(
       join(agentDir, "agent.ts"),
       generateAgentModuleSource({
-        provider: agent.modelProvider,
+        provider: spec.provider,
         modelId: agent.modelId,
         reasoning: agent.reasoning,
+        internalUrl: spec.internalUrl,
+        agentId: agent.id,
       }),
     );
     await writeFile(

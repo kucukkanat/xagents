@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { AdapterKind } from "@xagents/core";
 import {
   generateAgentModuleSource,
   generateKbSearchToolSource,
@@ -6,30 +7,63 @@ import {
 import { decodeResume, encodeResume } from "./resume";
 import { type EveRawEvent, isTurnTerminal, mapEveEvent, parseNdjson } from "./stream";
 
+const INTERNAL = { internalUrl: "http://127.0.0.1:3000", agentId: "agt_123" };
+
 describe("codegen", () => {
-  test("agent module wires the deepseek provider + model id", () => {
+  test("agent module wires the deepseek adapter + a hot-swappable dynamic model", () => {
     const src = generateAgentModuleSource({
-      provider: "deepseek",
+      provider: { providerId: "deepseek", adapterKind: "deepseek", settings: {} },
       modelId: "deepseek-chat",
       reasoning: "provider-default",
+      ...INTERNAL,
     });
-    expect(src).toContain('import { deepseek } from "@ai-sdk/deepseek"');
-    expect(src).toContain('deepseek("deepseek-chat")');
+    expect(src).toContain('import { createDeepSeek } from "@ai-sdk/deepseek"');
+    expect(src).toContain('import { defineAgent, defineDynamic } from "eve"');
+    expect(src).toContain("createDeepSeek({ apiKey: process.env.XAGENTS_PROVIDER_SECRET_APIKEY })");
+    // The default model is the agent's model, used as the dynamic fallback.
+    expect(src).toContain('const DEFAULT_MODEL = "deepseek-chat"');
+    expect(src).toContain("fallback: provider(DEFAULT_MODEL)");
+    expect(src).toContain('"step.started"');
+    // The resolver calls back to this agent's turn-model endpoint.
+    expect(src).toContain('"http://127.0.0.1:3000/internal/agents/agt_123/turn-model"');
     expect(src).not.toContain("reasoning:");
+  });
+
+  test("openai-compatible bakes the base URL and reads the key from env", () => {
+    const src = generateAgentModuleSource({
+      provider: {
+        providerId: "groq",
+        adapterKind: "openai-compatible",
+        settings: { baseURL: "https://api.groq.com/openai/v1" },
+      },
+      modelId: "llama-3.3-70b",
+      reasoning: "provider-default",
+      ...INTERNAL,
+    });
+    expect(src).toContain('import { createOpenAICompatible } from "@ai-sdk/openai-compatible"');
+    expect(src).toContain('baseURL: "https://api.groq.com/openai/v1"');
+    expect(src).toContain("apiKey: process.env.XAGENTS_PROVIDER_SECRET_APIKEY");
+    expect(src).not.toContain('"https://api.groq.com/openai/v1"; DROP'); // sanity: value is JSON-encoded
   });
 
   test("agent module emits reasoning only when it diverges from default", () => {
     const src = generateAgentModuleSource({
-      provider: "deepseek",
+      provider: { providerId: "deepseek", adapterKind: "deepseek", settings: {} },
       modelId: "deepseek-reasoner",
       reasoning: "high",
+      ...INTERNAL,
     });
     expect(src).toContain('reasoning: "high"');
   });
 
-  test("unsupported provider throws", () => {
+  test("unsupported adapter kind throws", () => {
     expect(() =>
-      generateAgentModuleSource({ provider: "acme", modelId: "x", reasoning: "none" }),
+      generateAgentModuleSource({
+        provider: { providerId: "x", adapterKind: "acme" as unknown as AdapterKind, settings: {} },
+        modelId: "x",
+        reasoning: "none",
+        ...INTERNAL,
+      }),
     ).toThrow();
   });
 

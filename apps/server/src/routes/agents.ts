@@ -1,11 +1,5 @@
 import { Hono } from "hono";
-import {
-  CreateAgentInput,
-  UpdateAgentInput,
-  appError,
-  asId,
-  findModel,
-} from "@xagents/core";
+import { CreateAgentInput, UpdateAgentInput, appError, asId } from "@xagents/core";
 import {
   type AppContext,
   exportAgent,
@@ -37,9 +31,9 @@ export const agentRoutes = (ctx: AppContext): Hono => {
   app.post("/", async (c) => {
     const body = parseBody(CreateAgentInput, await readJson(c));
     if (!body.ok) return sendError(c, body.error);
-    if (findModel(body.value.modelProvider, body.value.modelId) === undefined) {
-      return sendError(c, appError("validation", `unknown model ${body.value.modelProvider}/${body.value.modelId}`));
-    }
+    // The model must be an enabled model of an enabled, keyed provider.
+    const usable = ctx.registry.usability(body.value.modelProvider, body.value.modelId);
+    if (!usable.ok) return sendError(c, usable.error);
     const agent = ctx.db.agents.create(ctx.user.id, body.value);
     ctx.db.agents.setLinks(asId("AgentId", agent.id), {
       knowledgebaseIds: body.value.knowledgebaseIds,
@@ -58,6 +52,15 @@ export const agentRoutes = (ctx: AppContext): Hono => {
     const id = asId("AgentId", c.req.param("id"));
     const body = parseBody(UpdateAgentInput, await readJson(c));
     if (!body.ok) return sendError(c, body.error);
+    // If the edit touches the model, validate the effective (provider, model).
+    if (body.value.modelProvider !== undefined || body.value.modelId !== undefined) {
+      const current = ctx.db.agents.get(id);
+      if (!current.ok) return sendError(c, current.error);
+      const provider = body.value.modelProvider ?? current.value.modelProvider;
+      const modelId = body.value.modelId ?? current.value.modelId;
+      const usable = ctx.registry.usability(provider, modelId);
+      if (!usable.ok) return sendError(c, usable.error);
+    }
     const updated = ctx.db.agents.update(id, body.value);
     if (!updated.ok) return sendError(c, updated.error);
     if (body.value.knowledgebaseIds !== undefined || body.value.skillIds !== undefined) {

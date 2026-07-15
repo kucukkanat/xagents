@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "@hono/node-server/serve-static";
 import type { AppContext } from "./context";
+import { adminRoutes } from "./routes/admin";
 import { agentRoutes } from "./routes/agents";
 import { chatRoutes } from "./routes/chats";
 import { configRoutes } from "./routes/config";
@@ -24,6 +25,7 @@ export const createApp = (ctx: AppContext): Hono => {
   app.route("/api/skills", skillRoutes(ctx));
   app.route("/api/gallery", galleryRoutes(ctx));
   app.route("/api/chats", chatRoutes(ctx));
+  app.route("/api/admin", adminRoutes(ctx));
 
   // Loopback-only callback surface for materialized agents (kb_search).
   app.route("/internal", internalRoutes(ctx));

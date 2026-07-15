@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { selectOrphanSandboxPids } from "./supervisor";
+import { countSandboxPids, selectOrphanSandboxPids } from "./supervisor";
 
 /** A realistic `ps -Ao pid=,ppid=,command=` snapshot for one running server. */
 const PS = [
@@ -40,5 +40,17 @@ describe("selectOrphanSandboxPids", () => {
   test("empty/garbage snapshot yields nothing", () => {
     expect(selectOrphanSandboxPids("", new Set())).toEqual([]);
     expect(selectOrphanSandboxPids("not a ps line\n\n", new Set())).toEqual([]);
+  });
+});
+
+describe("countSandboxPids", () => {
+  test("counts every eve sandbox VM regardless of parent, ignoring warm/decoy", () => {
+    // 4100 (live), 4200, 4300 are eve-sbx VMs; 4400 is xagents-warm; 4500 is a decoy.
+    expect(countSandboxPids(PS)).toBe(3);
+  });
+
+  test("empty/garbage snapshot counts zero", () => {
+    expect(countSandboxPids("")).toBe(0);
+    expect(countSandboxPids("junk\n")).toBe(0);
   });
 });

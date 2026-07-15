@@ -1,6 +1,17 @@
 import type { KbSearchHit } from "./entities";
 
 /**
+ * Token accounting for one completed turn, when the model/runtime reports it.
+ * Optional on `turn_completed` because eve does not always surface usage — when
+ * absent, the platform records the run with null tokens/cost (graceful degrade).
+ */
+export interface TokenUsage {
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+  readonly totalTokens: number;
+}
+
+/**
  * Normalized chat-stream events. The server maps eve's raw NDJSON stream into
  * this stable union, persists it, and re-emits it to the browser over SSE.
  * The UI renders a timeline from these, so eve's internal event names never
@@ -42,6 +53,8 @@ export type ChatStreamEvent =
       readonly messageId: string;
       readonly text: string;
       readonly continuationToken: string;
+      /** Token usage for this turn, when eve reported it (see `TokenUsage`). */
+      readonly usage?: TokenUsage;
     }
   | { readonly type: "error"; readonly message: string };
 

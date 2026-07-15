@@ -64,7 +64,13 @@ export interface ChatsRepo {
   readonly list: (agentId: AgentId) => Chat[];
   /** A user's chats as history summaries, newest first, optionally one agent. */
   readonly listByUser: (userId: UserId, agentId?: AgentId) => ChatSummary[];
+  /** The chat backing an eve session, or undefined if none is mapped yet. */
+  readonly getBySessionId: (sessionId: string) => Chat | undefined;
   readonly setContinuationToken: (id: ChatId, token: string) => void;
+  /** Record the eve session id backing this chat (set once, after the first turn). */
+  readonly setEveSessionId: (id: ChatId, sessionId: string) => void;
+  /** Hot-swap the per-chat model override; null reverts to the agent default. */
+  readonly setOverrideModel: (id: ChatId, modelId: string | null) => void;
   readonly setTitle: (id: ChatId, title: string) => void;
   /** Delete a chat and, via ON DELETE CASCADE, its messages/events/turn row. */
   readonly delete: (id: ChatId) => void;
@@ -79,10 +85,13 @@ interface EventDataRow {
 
 export const createChatsRepo = (db: Sqlite): ChatsRepo => {
   const insertChat = db.prepare(
-    `INSERT INTO chats (id, agent_id, user_id, title, eve_continuation_token, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO chats (id, agent_id, user_id, title, eve_continuation_token, override_model_id, eve_session_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
   );
   const getRow = db.prepare<[string], ChatRow>("SELECT * FROM chats WHERE id = ?");
+  const getBySessionRow = db.prepare<[string], ChatRow>(
+    "SELECT * FROM chats WHERE eve_session_id = ?",
+  );
   const listRows = db.prepare<[string], ChatRow>(
     "SELECT * FROM chats WHERE agent_id = ? ORDER BY updated_at DESC",
   );
@@ -101,6 +110,12 @@ export const createChatsRepo = (db: Sqlite): ChatsRepo => {
   );
   const setToken = db.prepare(
     "UPDATE chats SET eve_continuation_token = ?, updated_at = ? WHERE id = ?",
+  );
+  const setSessionId = db.prepare(
+    "UPDATE chats SET eve_session_id = ?, updated_at = ? WHERE id = ?",
+  );
+  const setOverrideModelStmt = db.prepare(
+    "UPDATE chats SET override_model_id = ?, updated_at = ? WHERE id = ?",
   );
   const setTitleStmt = db.prepare("UPDATE chats SET title = ?, updated_at = ? WHERE id = ?");
   const deleteChatStmt = db.prepare("DELETE FROM chats WHERE id = ?");
@@ -144,6 +159,7 @@ export const createChatsRepo = (db: Sqlite): ChatsRepo => {
       userId,
       title,
       eveContinuationToken: null,
+      overrideModelId: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -154,6 +170,11 @@ export const createChatsRepo = (db: Sqlite): ChatsRepo => {
     return row === undefined ? err(appError("not_found", `chat ${id} not found`)) : ok(mapChatRow(row));
   };
 
+  const getBySessionId = (sessionId: string): Chat | undefined => {
+    const row = getBySessionRow.get(sessionId);
+    return row === undefined ? undefined : mapChatRow(row);
+  };
+
   const list = (agentId: AgentId): Chat[] => listRows.all(agentId).map(mapChatRow);
 
   const listByUser = (userId: UserId, agentId?: AgentId): ChatSummary[] =>
@@ -161,6 +182,14 @@ export const createChatsRepo = (db: Sqlite): ChatsRepo => {
 
   const setContinuationToken = (id: ChatId, token: string): void => {
     setToken.run(token, nowIso(), id);
+  };
+
+  const setEveSessionId = (id: ChatId, sessionId: string): void => {
+    setSessionId.run(sessionId, nowIso(), id);
+  };
+
+  const setOverrideModel = (id: ChatId, modelId: string | null): void => {
+    setOverrideModelStmt.run(modelId, nowIso(), id);
   };
 
   const setTitle = (id: ChatId, title: string): void => {
@@ -213,9 +242,12 @@ export const createChatsRepo = (db: Sqlite): ChatsRepo => {
   return {
     create,
     get,
+    getBySessionId,
     list,
     listByUser,
     setContinuationToken,
+    setEveSessionId,
+    setOverrideModel,
     setTitle,
     delete: deleteChat,
     messages,

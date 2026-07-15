@@ -41,6 +41,15 @@ export class ChatTurns {
     return turn !== undefined && !turn.done;
   }
 
+  /** Chat ids with a turn producing events right now — the live-turn gauge/list. */
+  activeChatIds(): string[] {
+    const ids: string[] = [];
+    for (const [chatId, turn] of this.#turns) {
+      if (!turn.done) ids.push(chatId);
+    }
+    return ids;
+  }
+
   /**
    * Start a background turn. Rejects (returns false) if one is already running
    * for this chat. The producer yields the normalized event timeline; each

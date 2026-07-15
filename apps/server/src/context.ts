@@ -15,6 +15,7 @@ import {
   asId,
   err,
   ok,
+  parseMasterKey,
 } from "@xagents/core";
 import { type Db, openDb } from "@xagents/db";
 import { chunkText, stitchChunks } from "@xagents/kb";
@@ -29,7 +30,10 @@ import {
   unzipBuffer,
   zipDirectory,
 } from "@xagents/eve-runtime";
+import { AdminHub } from "./admin/hub";
 import type { ServerConfig } from "./env";
+import { createProviderRegistry, type ProviderRegistry } from "./providers/registry";
+import { seedDefaultProviders } from "./providers/seed";
 import { ChatTurns } from "./turns";
 
 export interface AppContext {
@@ -37,6 +41,9 @@ export interface AppContext {
   readonly db: Db;
   readonly supervisor: HostSupervisor;
   readonly turns: ChatTurns;
+  readonly adminHub: AdminHub;
+  /** In-memory provider/model config + secret resolution (admin-managed). */
+  readonly registry: ProviderRegistry;
   readonly user: User;
 }
 
@@ -59,28 +66,63 @@ export const reconcileInterruptedTurns = (db: Db): void => {
 export const createContext = (config: ServerConfig): AppContext => {
   const db = openDb(config.databasePath);
   reconcileInterruptedTurns(db);
+  const registry = createProviderRegistry(db, parseMasterKey(config.encryptionKey));
+  seedDefaultProviders(db, registry, config);
+  const turns = new ChatTurns();
+  // Forward reference: the supervisor emits lifecycle events into the hub, and
+  // the hub reads the supervisor's live state — created in this order, wired via
+  // a closure that resolves once both exist (onEvent never fires during ctor).
+  let adminHub: AdminHub | undefined;
   const supervisor = new HostSupervisor({
     projectDirFor: (agentId) => join(config.agentsWorkspaceDir, agentId),
-    // Pass the provider key through to each eve child process.
-    env: { DEEPSEEK_API_KEY: config.deepseekApiKey },
+    // Resolve + decrypt only the provider secret this agent's model needs, at
+    // spawn time. A host thus never holds a key it doesn't use, and a key change
+    // followed by a host restart picks up the new value.
+    envFor: (agentId) => {
+      const agent = db.agents.get(asId("AgentId", agentId));
+      return agent.ok ? registry.envFor(agent.value.modelProvider) : {};
+    },
     idleMs: 10 * 60_000,
+    onEvent: (event) => adminHub?.onSupervisorEvent(event),
   });
-  return { config, db, supervisor, turns: new ChatTurns(), user: db.users.getCurrent() };
+  adminHub = new AdminHub({
+    db,
+    supervisor,
+    turns,
+    dbPath: config.databasePath,
+    sandboxBackend: config.sandboxBackend,
+    sampleIntervalMs: config.metricsSampleIntervalMs,
+    metricsRetentionDays: config.metricsRetentionDays,
+    historyRetentionDays: config.historyRetentionDays,
+  });
+  // Only sample/prune when the admin console is enabled — no background `ps`
+  // polling on a plain dev run that never opens the console.
+  if (config.adminToken !== undefined) adminHub.start();
+  return { config, db, supervisor, turns, adminHub, registry, user: db.users.getCurrent() };
 };
 
-/** Assemble the materialization spec from already-loaded agent detail. */
-const specFromDetail = (ctx: AppContext, detail: AgentDetail): AgentMaterializationSpec => {
+/**
+ * Assemble the materialization spec from already-loaded agent detail. Fails when
+ * the agent's provider is no longer configured (deleted), so codegen never runs
+ * against a missing adapter.
+ */
+const specFromDetail = (ctx: AppContext, detail: AgentDetail): Result<AgentMaterializationSpec, AppError> => {
+  const provider = ctx.registry.codegenFor(detail.agent.modelProvider);
+  if (provider === undefined) {
+    return err(appError("conflict", `model provider "${detail.agent.modelProvider}" is not configured`));
+  }
   const skills: MaterializedSkill[] = detail.skills.map((skill) => ({
     skill,
     resources: ctx.db.skills.listResources(asId("SkillId", skill.id)),
   }));
-  return {
+  return ok({
     agent: detail.agent,
+    provider,
     skills,
     hasKnowledgebases: detail.knowledgebases.length > 0,
     internalUrl: ctx.config.internalUrl,
     backendKind: ctx.config.sandboxBackend,
-  };
+  });
 };
 
 /** Rebuild the on-disk eve project for an agent from the current DB state. */
@@ -90,10 +132,9 @@ export const materializeFromDb = async (
 ): Promise<Result<void, AppError>> => {
   const detail = ctx.db.agents.getDetail(asId("AgentId", agentId));
   if (!detail.ok) return err(detail.error);
-  const written = await materializeAgent(
-    specFromDetail(ctx, detail.value),
-    join(ctx.config.agentsWorkspaceDir, agentId),
-  );
+  const spec = specFromDetail(ctx, detail.value);
+  if (!spec.ok) return err(spec.error);
+  const written = await materializeAgent(spec.value, join(ctx.config.agentsWorkspaceDir, agentId));
   return written.ok ? ok(undefined) : err(written.error);
 };
 
@@ -198,9 +239,11 @@ export const exportAgent = async (
   const detail = ctx.db.agents.getDetail(asId("AgentId", agentId));
   if (!detail.ok) return err(detail.error);
 
+  const spec = specFromDetail(ctx, detail.value);
+  if (!spec.ok) return err(spec.error);
   const dir = await mkdtemp(join(tmpdir(), "xagents-export-"));
   try {
-    const written = await materializeAgent(specFromDetail(ctx, detail.value), dir);
+    const written = await materializeAgent(spec.value, dir);
     if (!written.ok) return written;
     const kbRefs = await writeKnowledgebaseFiles(ctx, detail.value, dir);
     await writeExportManifest(dir, detail.value, kbRefs);
@@ -329,7 +372,7 @@ export const importAgentArchive = async (
     };
   }
 
-  const parsed = parseAgentArchive(unpacked.value);
+  const parsed = parseAgentArchive(unpacked.value, ctx.registry.modelResolver());
   const log: ImportLogEntry[] = [...parsed.log];
   const blocked = parsed.plan === null || log.some((e) => e.severity === "error");
 

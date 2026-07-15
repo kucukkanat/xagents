@@ -3,6 +3,7 @@ import { CompassIcon } from "lucide-react";
 import { AppShell, PaddedLayout } from "@/components/app-shell";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
+import { AdminPage } from "@/pages/admin";
 import { AgentDetailPage } from "@/pages/agent-detail";
 import { AgentEditorPage } from "@/pages/agent-editor";
 import { AgentsListPage } from "@/pages/agents-list";
@@ -51,6 +52,7 @@ export const router = createBrowserRouter([
           { path: "skills", element: <SkillsListPage /> },
           { path: "skills/new", element: <SkillEditorPage /> },
           { path: "skills/:id", element: <SkillEditorPage /> },
+          { path: "admin", element: <AdminPage /> },
           { path: "*", element: <NotFound /> },
         ],
       },

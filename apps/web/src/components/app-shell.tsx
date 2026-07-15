@@ -6,6 +6,7 @@ import {
   MessageSquareIcon,
   PlusIcon,
   SearchIcon,
+  ShieldIcon,
   SparklesIcon,
   type LucideIcon,
 } from "lucide-react";
@@ -59,6 +60,16 @@ const NAV: readonly NavSection[] = [
   },
 ];
 
+/**
+ * The super-admin console. Appended to the sidebar only when the server enables
+ * it (an ADMIN_TOKEN is set). Kept out of `NAV` — and thus out of the mobile tab
+ * bar — since it's a desktop-first operator surface.
+ */
+const SYSTEM_SECTION: NavSection = {
+  heading: "System",
+  items: [{ to: "/admin", label: "Admin", icon: ShieldIcon }],
+};
+
 /** Every primary destination, flattened for the mobile bottom tab bar. */
 const MOBILE_TABS: readonly NavItem[] = NAV.flatMap((section) => section.items);
 
@@ -79,9 +90,11 @@ function Brand() {
 }
 
 function NavLinks() {
+  const { adminAvailable } = useConfig();
+  const sections = adminAvailable ? [...NAV, SYSTEM_SECTION] : NAV;
   return (
     <nav className="flex-1 space-y-6 p-3">
-      {NAV.map((section, i) => (
+      {sections.map((section, i) => (
         <div key={section.heading ?? i} className="space-y-1">
           {section.heading ? (
             <p className="px-3 pb-1 text-xs font-medium uppercase tracking-wider text-muted-foreground/70">

@@ -1,7 +1,7 @@
-import type { ChatStreamEvent } from "@xagents/core";
+import type { ChatStreamEvent, TokenUsage } from "@xagents/core";
 import { openStream, postMessage } from "./client";
 import { encodeResume } from "./resume";
-import { isTurnTerminal, mapEveEvent, parseNdjson } from "./stream";
+import { extractUsage, isTurnTerminal, mapEveEvent, parseNdjson } from "./stream";
 import type { AgentHost, EveResume } from "./types";
 
 export { materializeAgent } from "./materialize";
@@ -14,13 +14,21 @@ export type {
   ImportPlanSkill,
   ParsedArchive,
 } from "./import";
-export { HostSupervisor } from "./supervisor";
+export { HostSupervisor, selectOrphanSandboxPids, countSandboxPids } from "./supervisor";
 export type { SupervisorOptions } from "./supervisor";
-export type { AgentHost, AgentMaterializationSpec, EveResume, MaterializedSkill } from "./types";
+export type {
+  AgentHost,
+  AgentMaterializationSpec,
+  EveResume,
+  HostStatus,
+  HostStopReason,
+  MaterializedSkill,
+  SupervisorEvent,
+} from "./types";
 export {
   generateAgentModuleSource,
   generateKbSearchToolSource,
-  isSupportedProvider,
+  isSupportedAdapterKind,
 } from "./codegen";
 export { encodeResume, decodeResume } from "./resume";
 
@@ -32,6 +40,13 @@ export interface RunChatTurnArgs {
   /** The server pre-allocates the assistant message id so it can persist the
    *  same id it streamed to the client. */
   readonly assistantMessageId: string;
+  /**
+   * Called with the eve session id as soon as it is known (right after the
+   * message is posted, before the agent starts streaming). The server maps it to
+   * this chat so the agent's dynamic-model resolver — which fires during the turn
+   * and is keyed by session id — resolves this chat's model override from turn one.
+   */
+  readonly onSessionStart?: (sessionId: string) => void;
 }
 
 /**
@@ -51,12 +66,17 @@ export async function* runChatTurn(args: RunChatTurnArgs): AsyncGenerator<ChatSt
     return;
   }
   const { sessionId, continuationToken, startIndex } = posted.value;
+  // Publish the session→chat mapping before we open the stream, so the model
+  // resolver's first callback (which may fire as the agent starts) already
+  // resolves this chat's override rather than falling back to the default.
+  args.onSessionStart?.(sessionId);
 
   yield { type: "turn_started", chatId: args.chatId };
 
   let text = "";
   let cursor = startIndex;
   let terminal = false;
+  let usage: TokenUsage | undefined;
 
   for (let attempt = 0; attempt < MAX_STREAM_RECONNECTS && !terminal; attempt++) {
     const stream = await openStream(args.host.origin, sessionId, cursor);
@@ -74,6 +94,8 @@ export async function* runChatTurn(args: RunChatTurnArgs): AsyncGenerator<ChatSt
           yield ev;
         }
         if (isTurnTerminal(raw)) {
+          // Token usage, when eve reports it, rides the terminal frame.
+          usage = extractUsage(raw) ?? usage;
           terminal = true;
           break;
         }
@@ -91,5 +113,6 @@ export async function* runChatTurn(args: RunChatTurnArgs): AsyncGenerator<ChatSt
     messageId: args.assistantMessageId,
     text,
     continuationToken: encodeResume({ sessionId, continuationToken, nextIndex: cursor }),
+    ...(usage !== undefined ? { usage } : {}),
   };
 }

@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { EXPORT_SCHEMA_ID } from "@xagents/core";
-import { parseAgentArchive } from "./import";
+import { type ModelResolver, EXPORT_SCHEMA_ID } from "@xagents/core";
+import { parseAgentArchive as parseRaw } from "./import";
+
+/** Only "deepseek" is configured, with two models; unknown models fall back to chat. */
+const resolver: ModelResolver = {
+  isKnownProvider: (p) => p === "deepseek",
+  hasModel: (p, m) => p === "deepseek" && (m === "deepseek-chat" || m === "deepseek-reasoner"),
+  fallbackFor: (p) => (p === "deepseek" ? { provider: "deepseek", modelId: "deepseek-chat" } : null),
+  knownProviders: () => ["deepseek"],
+};
+const parseAgentArchive = (f: Map<string, Buffer>) => parseRaw(f, resolver);
 
 const files = (obj: Record<string, string>): Map<string, Buffer> => {
   const map = new Map<string, Buffer>();

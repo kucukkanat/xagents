@@ -182,6 +182,10 @@ export const createChat = (input: CreateChatInput): Promise<Chat> =>
   request("/chats", { method: "POST", ...json(input) });
 export const renameChat = (id: string, title: string): Promise<Chat> =>
   request(`/chats/${id}`, { method: "PATCH", ...json({ title }) });
+/** Hot-swap this chat's model (a model of the agent's provider); null reverts to
+ *  the agent default. Takes effect on the next turn; conversation is preserved. */
+export const setChatModel = (id: string, modelId: string | null): Promise<Chat> =>
+  request(`/chats/${id}/model`, { method: "PATCH", ...json({ modelId }) });
 export const deleteChat = (id: string): Promise<void> =>
   request(`/chats/${id}`, { method: "DELETE" });
 /** Stop the in-flight turn for a chat. Resolves to whether a turn was actually running. */
